@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import * as L from "leaflet";
+import { buildGoogleMapsDirectionsUrl } from "../lib/provider-directions";
 import type {
   AppliedProviderSearch,
   NearbyProvider,
@@ -75,6 +76,22 @@ function createProviderPopup(provider: DisplayProvider) {
     distance.textContent = `Straight-line distance: ${provider.distance_km.toFixed(2)} km`;
     popup.appendChild(distance);
   }
+
+  const directionsLink = document.createElement("a");
+  directionsLink.href = buildGoogleMapsDirectionsUrl({
+    latitude: provider.latitude,
+    longitude: provider.longitude,
+  });
+  directionsLink.target = "_blank";
+  directionsLink.rel = "noopener noreferrer";
+  directionsLink.textContent = "Get directions ↗";
+  directionsLink.setAttribute(
+    "aria-label",
+    `Get directions to ${provider.name} in Google Maps (opens in a new tab)`
+  );
+  directionsLink.className =
+    "mt-2 inline-flex min-h-9 items-center justify-center rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold !text-white no-underline shadow-sm transition hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2";
+  popup.appendChild(directionsLink);
 
   return popup;
 }
@@ -322,10 +339,10 @@ export default function ProviderMap({
       map.invalidateSize();
 
       if (viewRequest.mode === "search") {
-        const searchBounds = L.circle(
-          [viewRequest.origin.latitude, viewRequest.origin.longitude],
-          { radius: viewRequest.radiusKm * 1000 }
-        ).getBounds();
+        const searchBounds = L.latLng(
+          viewRequest.origin.latitude,
+          viewRequest.origin.longitude
+        ).toBounds(viewRequest.radiusKm * 2000);
 
         map.fitBounds(searchBounds, {
           padding: [30, 30],

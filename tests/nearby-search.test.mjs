@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { LatestRequestCoordinator } from "../src/lib/latest-request.ts";
 import { validateNearbySearchParams } from "../src/lib/nearby-search.ts";
+import { buildGoogleMapsDirectionsUrl } from "../src/lib/provider-directions.ts";
 import {
   MISSING_STARTING_LOCATION_MESSAGE,
   canonicalizeAppliedDraft,
@@ -30,6 +31,28 @@ const unimaClinic = {
   longitude: 35.332129450877574,
   services: ["General OPD"],
 };
+
+test("builds a destination-only Google Maps directions link", () => {
+  const directionsUrl = new URL(
+    buildGoogleMapsDirectionsUrl({
+      latitude: unimaClinic.latitude,
+      longitude: unimaClinic.longitude,
+    })
+  );
+
+  assert.equal(directionsUrl.origin, "https://www.google.com");
+  assert.equal(directionsUrl.pathname, "/maps/dir/");
+  assert.equal(directionsUrl.searchParams.get("api"), "1");
+  assert.equal(
+    directionsUrl.searchParams.get("destination"),
+    "-15.385343687941972,35.332129450877574"
+  );
+  assert.equal(directionsUrl.searchParams.get("origin"), null);
+  assert.equal(
+    directionsUrl.searchParams.get("dir_action"),
+    "navigate"
+  );
+});
 
 function validate(query) {
   return validateNearbySearchParams(new URLSearchParams(query));

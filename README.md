@@ -16,6 +16,7 @@ UNIMED Provider Locator is an academic GIS web application for finding healthcar
 - Requests browser geolocation only after the user selects **Use my location**, with map and provider alternatives when location access fails.
 - Handles loading, validation, geolocation, empty-result, API-error, reset, and stale-request states.
 - Lets keyboard and pointer users focus a provider marker from its compact result card, with long service lists available through an expand/collapse control.
+- Provides a **Get directions** link in each provider map popup. It opens Google Maps with the provider's stored coordinates as the destination; no API key or geocoding request is used.
 - Gives the results list its own scroll area while the Leaflet map fills the remaining workspace and resizes without resetting the chosen map view.
 
 ## Technology
@@ -230,6 +231,7 @@ Also verify:
 10. Rapid consecutive searches cannot let an older response replace a newer one, and clicking a provider card still focuses its blue map marker and opens its popup.
 11. Missing or blank coordinates/radius, invalid IDs, and out-of-range values sent directly to the nearby API return HTTP `400`.
 12. At desktop widths, the normal toolbar, results heading, and a usable map area are visible together. At mobile widths, controls stack without horizontal overflow and the results and map remain available through normal page scrolling.
+13. Opening a provider marker popup and following **Get directions** opens Google Maps in a new tab with that provider's stored coordinates as the destination. The locator does not send a starting location in the link.
 
 ## Limitations
 
@@ -239,4 +241,5 @@ Also verify:
 - Distances do not account for roads, terrain, traffic, or travel time.
 - Map tiles are © OpenStreetMap contributors, require internet access, and are subject to OpenStreetMap tile availability and usage policy.
 - No external geocoder is used; named starting points come only from the supplied provider records.
-- This version has no administration, authentication, routing, paid services, or deployment configuration.
+- Road directions are handled by Google Maps only after a user follows **Get directions**. The locator itself does not calculate routes or travel times.
+- This version has no administration, authentication, built-in route calculation, paid services, or deployment configuration.
