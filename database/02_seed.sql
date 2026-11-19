@@ -84,12 +84,12 @@ VALUES
     'Zomba',
     NULL,
     NULL,
-    ST_SetSRID(ST_MakePoint(35.323090666689865, -15.373832034378447), 4326)::geography,
+    ST_SetSRID(ST_MakePoint(35.32307989318453, -15.391769141755343), 4326)::geography,
     TRUE,
-    'https://maps.app.goo.gl/RQA5ThCt1Xtdkgkz7',
+    'https://maps.app.goo.gl/LbKCZGmETdZsKUQk7',
     NULL,
     '2026-11-19T02:34:43.868529Z'::timestamptz,
-    '2026-11-19T03:35:55.221503Z'::timestamptz
+    '2026-11-19T10:27:57.327163Z'::timestamptz
   ),
   (
     5,

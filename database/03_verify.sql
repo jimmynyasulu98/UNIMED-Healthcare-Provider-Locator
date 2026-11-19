@@ -46,7 +46,8 @@ BEGIN
     longitude,
     latitude,
     data_source,
-    created_at
+    created_at,
+    updated_at
   ) AS (
     VALUES
       (
@@ -56,18 +57,19 @@ BEGIN
         35.322093933683::double precision,
         -15.383457318605885::double precision,
         'https://maps.app.goo.gl/7CcuDbSVgDvKm3Up6'::text,
-        '2026-11-19T02:34:43.868529Z'::timestamptz
+        '2026-11-19T02:34:43.868529Z'::timestamptz,
+        '2026-11-19T03:35:55.221503Z'::timestamptz
       ),
-      (2, 'Zomba Central', 'Government', 35.31400676595647, -15.399341829621479, 'https://maps.app.goo.gl/pwfWFcxzGz2xkqM56', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (3, 'Hope Med Clinic', 'Private', 35.35994446436877, -15.379403134991001, 'https://maps.app.goo.gl/fS73vYEgCBGos6vU9', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (4, 'Zomba City Clinic', 'Private', 35.323090666689865, -15.373832034378447, 'https://maps.app.goo.gl/RQA5ThCt1Xtdkgkz7', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (5, 'Bico Optical', 'Private', 35.321100966222026, -15.388990216215568, 'https://maps.app.goo.gl/Xr6syUhXDdEtvUxW6', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (6, 'MASM', 'Private', 35.33160207971347, -15.378124822961675, 'https://maps.app.goo.gl/tRsXkzbjsKP3VLeh9', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (7, 'St Luke', 'CHAM', 35.35283560854577, -15.208248129662438, 'https://maps.app.goo.gl/Dq5coApygPDH55Dk6', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (8, 'Banja Lantsogolo Zomba', NULL, 35.320069650878665, -15.388683748249795, 'https://maps.app.goo.gl/rBzJNNWLGu9TJPQ7A', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (9, 'Citipham Zomba', NULL, 35.31955356436971, -15.386169942136581, 'https://maps.app.goo.gl/mCVbQLqrjWDVBHaF7', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (10, 'UNIMA Clinic', 'University', 35.332129450877574, -15.385343687941972, 'https://maps.app.goo.gl/4r1Z7X195wMev1g68', '2026-11-19T02:34:43.868529Z'::timestamptz),
-      (11, 'Pirimiti Mission Hospital', 'CHAM', 35.45042037971602, -15.48157217321732, 'https://maps.app.goo.gl/s9gzw842Q5WY966q7', '2026-11-19T03:02:16.932361Z'::timestamptz)
+      (2, 'Zomba Central', 'Government', 35.31400676595647, -15.399341829621479, 'https://maps.app.goo.gl/pwfWFcxzGz2xkqM56', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (3, 'Hope Med Clinic', 'Private', 35.35994446436877, -15.379403134991001, 'https://maps.app.goo.gl/fS73vYEgCBGos6vU9', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (4, 'Zomba City Clinic', 'Private', 35.32307989318453, -15.391769141755343, 'https://maps.app.goo.gl/LbKCZGmETdZsKUQk7', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T10:27:57.327163Z'::timestamptz),
+      (5, 'Bico Optical', 'Private', 35.321100966222026, -15.388990216215568, 'https://maps.app.goo.gl/Xr6syUhXDdEtvUxW6', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (6, 'MASM', 'Private', 35.33160207971347, -15.378124822961675, 'https://maps.app.goo.gl/tRsXkzbjsKP3VLeh9', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (7, 'St Luke', 'CHAM', 35.35283560854577, -15.208248129662438, 'https://maps.app.goo.gl/Dq5coApygPDH55Dk6', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (8, 'Banja Lantsogolo Zomba', NULL, 35.320069650878665, -15.388683748249795, 'https://maps.app.goo.gl/rBzJNNWLGu9TJPQ7A', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (9, 'Citipham Zomba', NULL, 35.31955356436971, -15.386169942136581, 'https://maps.app.goo.gl/mCVbQLqrjWDVBHaF7', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (10, 'UNIMA Clinic', 'University', 35.332129450877574, -15.385343687941972, 'https://maps.app.goo.gl/4r1Z7X195wMev1g68', '2026-11-19T02:34:43.868529Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz),
+      (11, 'Pirimiti Mission Hospital', 'CHAM', 35.45042037971602, -15.48157217321732, 'https://maps.app.goo.gl/s9gzw842Q5WY966q7', '2026-11-19T03:02:16.932361Z'::timestamptz, '2026-11-19T03:35:55.221503Z'::timestamptz)
   )
   SELECT string_agg(e.name, ', ' ORDER BY e.name)
   INTO mismatch_details
@@ -85,7 +87,7 @@ BEGIN
      OR p.data_source IS DISTINCT FROM e.data_source
      OR p.verified_on IS NOT NULL
      OR p.created_at IS DISTINCT FROM e.created_at
-     OR p.updated_at IS DISTINCT FROM '2026-11-19T03:35:55.221503Z'::timestamptz
+     OR p.updated_at IS DISTINCT FROM e.updated_at
      OR ST_GeometryType(p.location::geometry) <> 'ST_Point'
      OR ST_SRID(p.location::geometry) <> 4326
      OR abs(ST_X(p.location::geometry) - e.longitude) > 1e-12

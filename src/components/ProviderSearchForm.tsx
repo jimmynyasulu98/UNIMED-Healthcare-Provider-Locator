@@ -6,6 +6,11 @@ import type {
   NearbySearchField,
   NearbySearchValidationError,
 } from "../lib/nearby-search";
+import {
+  MAX_ROAD_DISTANCE_KM,
+  type RoadSearchField,
+  type RoadSearchValidationError,
+} from "../lib/road-search";
 import type { Provider, ServiceOption } from "../types/provider";
 
 export type GeolocationStatus = {
@@ -13,14 +18,23 @@ export type GeolocationStatus = {
   message: string | null;
 };
 
-type FilterField = "radiusKm" | "serviceId" | "category";
+type FilterField =
+  | "mode"
+  | "radiusKm"
+  | "maxRoadDistanceKm"
+  | "serviceId"
+  | "category";
+
+type SearchValidationError =
+  | NearbySearchValidationError
+  | RoadSearchValidationError;
 
 type ProviderSearchFormProps = {
   draft: SearchDraft;
   providers: Provider[];
   services: ServiceOption[];
   categories: string[];
-  validationErrors: NearbySearchValidationError[];
+  validationErrors: SearchValidationError[];
   locationError: string | null;
   geolocationStatus: GeolocationStatus;
   mapSelectionMode: boolean;
@@ -41,6 +55,7 @@ type ProviderSearchFormProps = {
 };
 
 const RADIUS_OPTIONS = [1, 5, 10, 17, 20, 50];
+const ROAD_DISTANCE_OPTIONS = [5, 10, 20, 50, 100];
 
 const CONTROL_CLASS =
   "min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-200 disabled:cursor-not-allowed disabled:bg-slate-100 lg:min-h-10 lg:py-1.5";
@@ -49,8 +64,8 @@ const SECONDARY_BUTTON_CLASS =
   "min-h-11 w-full rounded-lg border border-blue-700 px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-10 lg:py-1.5";
 
 function hasFieldError(
-  errors: NearbySearchValidationError[],
-  field: NearbySearchField
+  errors: SearchValidationError[],
+  field: NearbySearchField | RoadSearchField
 ) {
   return errors.some((error) => error.field === field);
 }
@@ -173,29 +188,89 @@ export default function ProviderSearchForm({
           </div>
         </fieldset>
 
-        <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-[100px_minmax(180px,1fr)_minmax(160px,1fr)_auto_auto_auto] lg:items-end">
+        <div className="grid min-w-0 gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(160px,1fr)_minmax(130px,0.8fr)_minmax(160px,1fr)_minmax(145px,0.9fr)_auto_auto_auto] lg:items-end">
           <label className="block min-w-0">
             <span className="text-sm font-semibold text-slate-700">
-              Radius
+              Search mode
             </span>
             <select
-              value={draft.radiusKm}
+              value={draft.mode}
               onChange={(event) =>
-                onFilterChange("radiusKm", event.target.value)
+                onFilterChange("mode", event.target.value)
               }
               disabled={controlsDisabled}
-              aria-invalid={hasFieldError(
-                validationErrors,
-                "radius_km"
-              )}
               className={`${CONTROL_CLASS} mt-0.5`}
             >
-              {RADIUS_OPTIONS.map((radius) => (
-                <option key={radius} value={radius}>
-                  {radius} km
-                </option>
-              ))}
+              <option value="straight-line">
+                Straight-line radius
+              </option>
+              <option value="road">Shortest by road</option>
             </select>
+          </label>
+
+          <label className="block min-w-0">
+            <span className="text-sm font-semibold text-slate-700">
+              {draft.mode === "road"
+                ? "Maximum road distance"
+                : "Radius"}
+            </span>
+            {draft.mode === "road" ? (
+              <div className="mt-0.5 flex items-center gap-1.5">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  max={MAX_ROAD_DISTANCE_KM}
+                  step="any"
+                  list="road-distance-options"
+                  value={draft.maxRoadDistanceKm}
+                  onChange={(event) =>
+                    onFilterChange(
+                      "maxRoadDistanceKm",
+                      event.target.value
+                    )
+                  }
+                  disabled={controlsDisabled}
+                  aria-invalid={hasFieldError(
+                    validationErrors,
+                    "max_road_distance_km"
+                  )}
+                  aria-describedby="maximum-road-distance-unit"
+                  placeholder="No maximum"
+                  className={`${CONTROL_CLASS} min-w-0`}
+                />
+                <span
+                  id="maximum-road-distance-unit"
+                  className="shrink-0 text-sm text-slate-500"
+                >
+                  km
+                </span>
+                <datalist id="road-distance-options">
+                  {ROAD_DISTANCE_OPTIONS.map((distance) => (
+                    <option key={distance} value={distance} />
+                  ))}
+                </datalist>
+              </div>
+            ) : (
+              <select
+                value={draft.radiusKm}
+                onChange={(event) =>
+                  onFilterChange("radiusKm", event.target.value)
+                }
+                disabled={controlsDisabled}
+                aria-invalid={hasFieldError(
+                  validationErrors,
+                  "radius_km"
+                )}
+                className={`${CONTROL_CLASS} mt-0.5`}
+              >
+                {RADIUS_OPTIONS.map((radius) => (
+                  <option key={radius} value={radius}>
+                    {radius} km
+                  </option>
+                ))}
+              </select>
+            )}
           </label>
 
           <label className="block min-w-0">

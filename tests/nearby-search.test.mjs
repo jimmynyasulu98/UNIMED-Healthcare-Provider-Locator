@@ -3,10 +3,16 @@ import test from "node:test";
 
 import { LatestRequestCoordinator } from "../src/lib/latest-request.ts";
 import { validateNearbySearchParams } from "../src/lib/nearby-search.ts";
+import { buildProviderSearchRequest } from "../src/lib/provider-search-request.ts";
 import { buildGoogleMapsDirectionsUrl } from "../src/lib/provider-directions.ts";
+import {
+  validateRoadRouteParams,
+  validateRoadSearchParams,
+} from "../src/lib/road-search.ts";
 import {
   MISSING_STARTING_LOCATION_MESSAGE,
   canonicalizeAppliedDraft,
+  canonicalizeRoadAppliedDraft,
   clearSelectedLocation,
   createDefaultSearchDraft,
   geolocationFailureMessage,
@@ -78,6 +84,97 @@ test("accepts the documented UNIMA Clinic search origin", () => {
       category: "University",
     });
   }
+});
+
+test("straight-line radius remains the default search mode", () => {
+  const draft = createDefaultSearchDraft();
+  const request = buildProviderSearchRequest(draft);
+
+  assert.equal(draft.mode, "straight-line");
+  assert.equal(draft.maxRoadDistanceKm, "");
+  assert.equal(request.endpoint, "/api/providers/nearby");
+  assert.equal(request.searchParams.get("radius_km"), "5");
+  assert.equal(
+    request.searchParams.has("max_road_distance_km"),
+    false
+  );
+});
+
+test("road mode uses its own optional distance parameter and endpoint", () => {
+  const noMaximum = {
+    ...createDefaultSearchDraft(),
+    mode: "road",
+    latitude: "-15.3853",
+    longitude: "35.3321",
+    serviceId: "1",
+    category: "University",
+  };
+  const limited = { ...noMaximum, maxRoadDistanceKm: "12.5" };
+  const noMaximumRequest = buildProviderSearchRequest(noMaximum);
+  const limitedRequest = buildProviderSearchRequest(limited);
+
+  assert.equal(noMaximumRequest.endpoint, "/api/providers/road");
+  assert.equal(noMaximumRequest.searchParams.has("radius_km"), false);
+  assert.equal(
+    noMaximumRequest.searchParams.has("max_road_distance_km"),
+    false
+  );
+  assert.equal(
+    limitedRequest.searchParams.get("max_road_distance_km"),
+    "12.5"
+  );
+  assert.equal(limitedRequest.searchParams.get("service_id"), "1");
+  assert.equal(
+    limitedRequest.searchParams.get("category"),
+    "University"
+  );
+});
+
+test("validates optional maximum road distance independently of radius", () => {
+  const validUnlimited = validateRoadSearchParams(
+    new URLSearchParams("latitude=-15&longitude=35")
+  );
+  const validLimited = validateRoadSearchParams(
+    new URLSearchParams(
+      "latitude=-15&longitude=35&max_road_distance_km=12.5"
+    )
+  );
+
+  assert.equal(validUnlimited.ok, true);
+  assert.equal(validLimited.ok, true);
+
+  if (validUnlimited.ok && validLimited.ok) {
+    assert.equal(validUnlimited.value.maxRoadDistanceKm, null);
+    assert.equal(validLimited.value.maxRoadDistanceKm, 12.5);
+  }
+
+  for (const query of [
+    "latitude=-15&longitude=35&max_road_distance_km=0",
+    "latitude=-15&longitude=35&max_road_distance_km=Infinity",
+    "latitude=-15&longitude=35&max_road_distance_km=501",
+    "latitude=-15&longitude=35&max_road_distance_km=5&max_road_distance_km=10",
+  ]) {
+    assert.equal(
+      validateRoadSearchParams(new URLSearchParams(query)).ok,
+      false
+    );
+  }
+});
+
+test("validates a selected-provider route request", () => {
+  const valid = validateRoadRouteParams(
+    new URLSearchParams(
+      "latitude=-15.3853&longitude=35.3321&provider_id=10"
+    )
+  );
+  const invalid = validateRoadRouteParams(
+    new URLSearchParams(
+      "latitude=-15.3853&longitude=35.3321&provider_id=10%20OR%201%3D1"
+    )
+  );
+
+  assert.equal(valid.ok, true);
+  assert.equal(invalid.ok, false);
 });
 
 test("rejects missing and blank required values", () => {
@@ -259,6 +356,51 @@ test("applied search metadata stays frozen when the draft changes", () => {
   assert.equal(searchDraftsMatch(applied, changedDraft), false);
 });
 
+test("switching search mode is an unapplied change", () => {
+  const submitted = selectProviderLocation(
+    createDefaultSearchDraft(),
+    unimaClinic
+  );
+  const applied = canonicalizeAppliedDraft(
+    {
+      latitude: unimaClinic.latitude,
+      longitude: unimaClinic.longitude,
+      radiusKm: 5,
+      serviceId: null,
+      category: null,
+    },
+    submitted
+  );
+  const roadDraft = { ...applied, mode: "road" };
+
+  assert.equal(applied.mode, "straight-line");
+  assert.equal(searchDraftsMatch(applied, roadDraft), false);
+});
+
+test("canonical road search keeps its own maximum and filters", () => {
+  const submitted = {
+    ...selectProviderLocation(createDefaultSearchDraft(), unimaClinic),
+    mode: "road",
+    maxRoadDistanceKm: "20.0",
+    serviceId: "1",
+  };
+  const applied = canonicalizeRoadAppliedDraft(
+    {
+      latitude: unimaClinic.latitude,
+      longitude: unimaClinic.longitude,
+      maxRoadDistanceKm: 20,
+      serviceId: "1",
+      category: null,
+    },
+    submitted
+  );
+
+  assert.equal(applied.mode, "road");
+  assert.equal(applied.maxRoadDistanceKm, "20");
+  assert.equal(applied.radiusKm, "5");
+  assert.equal(applied.locationLabel, "UNIMA Clinic");
+});
+
 test("semantically identical numeric values are not marked changed", () => {
   const first = selectMapLocation(createDefaultSearchDraft(), {
     latitude: -15,
@@ -310,12 +452,14 @@ test("clearing or resetting removes location and filter state", () => {
   assert.equal(locationCleared.latitude, "");
   assert.equal(locationCleared.longitude, "");
   assert.deepEqual(reset, {
+    mode: "straight-line",
     latitude: "",
     longitude: "",
     locationSource: "none",
     locationLabel: null,
     startingPointId: "",
     radiusKm: "5",
+    maxRoadDistanceKm: "",
     serviceId: "",
     category: "",
   });

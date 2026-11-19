@@ -17,9 +17,11 @@ import type {
   ProviderFocusRequest,
 } from "../../components/ProviderMap";
 import { LatestRequestCoordinator } from "../../lib/latest-request";
+import { buildProviderSearchRequest } from "../../lib/provider-search-request";
 import {
   MISSING_STARTING_LOCATION_MESSAGE,
   canonicalizeAppliedDraft,
+  canonicalizeRoadAppliedDraft,
   clearSelectedLocation,
   createDefaultSearchDraft,
   geolocationFailureMessage,
@@ -35,8 +37,14 @@ import {
 } from "../../lib/provider-search-state";
 import {
   validateNearbySearchParams,
+  type NearbySearchCriteria,
   type NearbySearchValidationError,
 } from "../../lib/nearby-search";
+import {
+  validateRoadSearchParams,
+  type RoadSearchCriteria,
+  type RoadSearchValidationError,
+} from "../../lib/road-search";
 import type {
   ApiErrorResponse,
   AppliedProviderSearch,
@@ -44,6 +52,9 @@ import type {
   NearbyProvidersResponse,
   Provider,
   ProvidersResponse,
+  RoadProvider,
+  RoadProvidersResponse,
+  RoadRouteResponse,
   SearchOrigin,
   ServiceOption,
   ServicesResponse,
@@ -62,28 +73,19 @@ const ProviderMap = dynamic(
 );
 
 type InitialStatus = "loading" | "success" | "error";
-type ResultsMode = "all" | "nearby";
-type DisplayProvider = Provider | NearbyProvider;
+type ResultsMode = "all" | "search";
+type DisplayProvider = Provider | NearbyProvider | RoadProvider;
 type AppliedSearchView = AppliedProviderSearch & {
   locationLabel: string;
 };
 
-function createSearchParams(draft: SearchDraft) {
-  const searchParams = new URLSearchParams();
-  searchParams.set("latitude", draft.latitude);
-  searchParams.set("longitude", draft.longitude);
-  searchParams.set("radius_km", draft.radiusKm);
+type SearchValidationError =
+  | NearbySearchValidationError
+  | RoadSearchValidationError;
 
-  if (draft.serviceId.trim() !== "") {
-    searchParams.set("service_id", draft.serviceId);
-  }
-
-  if (draft.category.trim() !== "") {
-    searchParams.set("category", draft.category);
-  }
-
-  return searchParams;
-}
+type ValidatedSearch =
+  | { mode: "straight-line"; criteria: NearbySearchCriteria }
+  | { mode: "road"; criteria: RoadSearchCriteria };
 
 async function readApiError(
   response: Response,
@@ -108,14 +110,22 @@ function isNearbyProvider(
   return "distance_km" in provider;
 }
 
+function isRoadProvider(
+  provider: DisplayProvider
+): provider is RoadProvider {
+  return "route_status" in provider;
+}
+
 type ProviderResultCardProps = {
   provider: DisplayProvider;
-  onFocus: (providerId: string) => void;
+  routeLoading: boolean;
+  onSelect: (providerId: string) => void;
 };
 
 function ProviderResultCard({
   provider,
-  onFocus,
+  routeLoading,
+  onSelect,
 }: ProviderResultCardProps) {
   const visibleServices = provider.services.slice(0, 2);
   const additionalServices = provider.services.slice(2);
@@ -171,17 +181,38 @@ function ProviderResultCard({
             Straight-line distance: {" "}
             {provider.distance_km.toFixed(2)} km
           </p>
+        ) : isRoadProvider(provider) ? (
+          <p className="min-w-0 text-xs font-semibold text-slate-700">
+            {provider.route_status === "reachable" &&
+            provider.road_distance_km !== null
+              ? `Road distance: ${provider.road_distance_km.toFixed(2)} km`
+              : provider.route_status === "snap-too-far"
+                ? "Too far from the routable road network"
+                : "No road route available"}
+          </p>
         ) : (
           <span aria-hidden="true" />
         )}
 
         <button
           type="button"
-          onClick={() => onFocus(provider.id)}
-          aria-label={`Show ${provider.name} on map`}
-          className="min-h-11 shrink-0 rounded-md px-2.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 lg:min-h-9"
+          onClick={() => onSelect(provider.id)}
+          disabled={routeLoading}
+          aria-busy={routeLoading}
+          aria-label={
+            isRoadProvider(provider) &&
+            provider.route_status === "reachable"
+              ? `Show road route to ${provider.name}`
+              : `Show ${provider.name} on map`
+          }
+          className="min-h-11 shrink-0 rounded-md px-2.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-wait disabled:opacity-70 lg:min-h-9"
         >
-          Show on map
+          {routeLoading
+            ? "Loading route..."
+            : isRoadProvider(provider) &&
+                provider.route_status === "reachable"
+              ? "Show route"
+              : "Show on map"}
         </button>
       </div>
     </article>
@@ -211,7 +242,7 @@ export default function ProvidersPage() {
   const [appliedSearch, setAppliedSearch] =
     useState<AppliedSearchView | null>(null);
   const [validationErrors, setValidationErrors] = useState<
-    NearbySearchValidationError[]
+    SearchValidationError[]
   >([]);
   const [locationError, setLocationError] = useState<string | null>(
     null
@@ -228,11 +259,20 @@ export default function ProvidersPage() {
   });
   const [focusRequest, setFocusRequest] =
     useState<ProviderFocusRequest | null>(null);
+  const [selectedRoute, setSelectedRoute] =
+    useState<RoadRouteResponse | null>(null);
+  const [routeLoadingProviderId, setRouteLoadingProviderId] =
+    useState<string | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
+  const routeAbortRef = useRef<AbortController | null>(null);
   const geolocationRequestRef = useRef(0);
   const mapSectionRef = useRef<HTMLElement | null>(null);
   const mapInstructionRef = useRef<HTMLParagraphElement | null>(null);
   const [requestCoordinator] = useState(
+    () => new LatestRequestCoordinator()
+  );
+  const [routeRequestCoordinator] = useState(
     () => new LatestRequestCoordinator()
   );
 
@@ -285,6 +325,11 @@ export default function ProvidersPage() {
         setServices(servicesData.services);
         setResultsMode("all");
         setAppliedSearch(null);
+        routeAbortRef.current?.abort();
+        routeRequestCoordinator.invalidate();
+        setSelectedRoute(null);
+        setRouteLoadingProviderId(null);
+        setRouteError(null);
         setInitialStatus("success");
         setViewRequest((current) => ({
           id: current.id + 1,
@@ -305,15 +350,17 @@ export default function ProvidersPage() {
     void loadInitialData();
 
     return () => controller.abort();
-  }, [reloadKey]);
+  }, [reloadKey, routeRequestCoordinator]);
 
   useEffect(
     () => () => {
       searchAbortRef.current?.abort();
+      routeAbortRef.current?.abort();
       requestCoordinator.invalidate();
+      routeRequestCoordinator.invalidate();
       geolocationRequestRef.current += 1;
     },
-    [requestCoordinator]
+    [requestCoordinator, routeRequestCoordinator]
   );
 
   const categories = useMemo(() => {
@@ -350,10 +397,22 @@ export default function ProvidersPage() {
 
   const handleFilterChange = useCallback(
     (
-      field: "radiusKm" | "serviceId" | "category",
+      field:
+        | "mode"
+        | "radiusKm"
+        | "maxRoadDistanceKm"
+        | "serviceId"
+        | "category",
       value: string
     ) => {
-      setDraft((current) => ({ ...current, [field]: value }));
+      if (
+        field === "mode" &&
+        (value === "straight-line" || value === "road")
+      ) {
+        setDraft((current) => ({ ...current, mode: value }));
+      } else if (field !== "mode") {
+        setDraft((current) => ({ ...current, [field]: value }));
+      }
       setValidationErrors([]);
       setSearchError(null);
     },
@@ -500,17 +559,42 @@ export default function ProvidersPage() {
       return;
     }
 
-    const searchParams = createSearchParams(submittedDraft);
-    const validation = validateNearbySearchParams(searchParams);
+    const { searchParams } = buildProviderSearchRequest(
+      submittedDraft
+    );
+    let validatedSearch: ValidatedSearch;
 
-    if (!validation.ok) {
-      setLocationError(null);
-      setValidationErrors(validation.errors);
-      setSearchError(null);
-      return;
+    if (submittedDraft.mode === "straight-line") {
+      const validation = validateNearbySearchParams(searchParams);
+
+      if (!validation.ok) {
+        setLocationError(null);
+        setValidationErrors(validation.errors);
+        setSearchError(null);
+        return;
+      }
+
+      validatedSearch = {
+        mode: "straight-line",
+        criteria: validation.value,
+      };
+    } else {
+      const validation = validateRoadSearchParams(searchParams);
+
+      if (!validation.ok) {
+        setLocationError(null);
+        setValidationErrors(validation.errors);
+        setSearchError(null);
+        return;
+      }
+
+      validatedSearch = {
+        mode: "road",
+        criteria: validation.value,
+      };
     }
 
-    const criteria = validation.value;
+    const { criteria } = validatedSearch;
     const requestId = requestCoordinator.start();
     const controller = new AbortController();
 
@@ -525,8 +609,19 @@ export default function ProvidersPage() {
     const requestParams = new URLSearchParams({
       latitude: String(criteria.latitude),
       longitude: String(criteria.longitude),
-      radius_km: String(criteria.radiusKm),
     });
+
+    if (validatedSearch.mode === "straight-line") {
+      requestParams.set(
+        "radius_km",
+        String(validatedSearch.criteria.radiusKm)
+      );
+    } else if (validatedSearch.criteria.maxRoadDistanceKm !== null) {
+      requestParams.set(
+        "max_road_distance_km",
+        String(validatedSearch.criteria.maxRoadDistanceKm)
+      );
+    }
 
     if (criteria.serviceId) {
       requestParams.set("service_id", criteria.serviceId);
@@ -537,8 +632,9 @@ export default function ProvidersPage() {
     }
 
     try {
+      const { endpoint } = buildProviderSearchRequest(submittedDraft);
       const response = await fetch(
-        `/api/providers/nearby?${requestParams.toString()}`,
+        `${endpoint}?${requestParams.toString()}`,
         {
           signal: controller.signal,
           cache: "no-store",
@@ -551,7 +647,68 @@ export default function ProvidersPage() {
         );
       }
 
-      const data = (await response.json()) as NearbyProvidersResponse;
+      if (
+        controller.signal.aborted ||
+        !requestCoordinator.isCurrent(requestId)
+      ) {
+        return;
+      }
+
+      let canonicalDraft: SearchDraft;
+      let nextAppliedSearch: AppliedSearchView;
+      let nextProviders: DisplayProvider[];
+      let nextViewRequest:
+        | {
+            mode: "straight-search";
+            origin: SearchOrigin;
+            radiusKm: number;
+          }
+        | { mode: "road-search"; origin: SearchOrigin };
+
+      if (validatedSearch.mode === "straight-line") {
+        const data = (await response.json()) as NearbyProvidersResponse;
+        canonicalDraft = canonicalizeAppliedDraft(
+          validatedSearch.criteria,
+          submittedDraft
+        );
+        nextAppliedSearch = {
+          mode: "straight-line",
+          origin: data.origin,
+          radius_km: data.radius_km,
+          service_id: criteria.serviceId,
+          category: criteria.category,
+          locationLabel:
+            submittedDraft.locationLabel ??
+            "Manually entered location",
+        };
+        nextProviders = data.providers;
+        nextViewRequest = {
+          mode: "straight-search",
+          origin: data.origin,
+          radiusKm: data.radius_km,
+        };
+      } else {
+        const data = (await response.json()) as RoadProvidersResponse;
+        canonicalDraft = canonicalizeRoadAppliedDraft(
+          validatedSearch.criteria,
+          submittedDraft
+        );
+        nextAppliedSearch = {
+          mode: "road",
+          origin: data.origin,
+          max_road_distance_km: data.max_road_distance_km,
+          service_id: criteria.serviceId,
+          category: criteria.category,
+          locationLabel:
+            submittedDraft.locationLabel ??
+            "Manually entered location",
+        };
+        nextProviders = data.providers;
+        nextViewRequest = {
+          mode: "road-search",
+          origin: data.origin,
+        };
+      }
 
       if (
         controller.signal.aborted ||
@@ -560,22 +717,13 @@ export default function ProvidersPage() {
         return;
       }
 
-      const canonicalDraft = canonicalizeAppliedDraft(
-        criteria,
-        submittedDraft
-      );
-      const nextAppliedSearch: AppliedSearchView = {
-        origin: data.origin,
-        radius_km: data.radius_km,
-        service_id: criteria.serviceId,
-        category: criteria.category,
-        locationLabel:
-          submittedDraft.locationLabel ??
-          "Manually entered location",
-      };
-
-      setDisplayedProviders(data.providers);
-      setResultsMode("nearby");
+      routeAbortRef.current?.abort();
+      routeRequestCoordinator.invalidate();
+      setSelectedRoute(null);
+      setRouteLoadingProviderId(null);
+      setRouteError(null);
+      setDisplayedProviders(nextProviders);
+      setResultsMode("search");
       setAppliedSearch(nextAppliedSearch);
       setAppliedDraft(canonicalDraft);
       setDraft((current) =>
@@ -586,9 +734,7 @@ export default function ProvidersPage() {
       setFocusRequest(null);
       setViewRequest((current) => ({
         id: current.id + 1,
-        mode: "search",
-        origin: data.origin,
-        radiusKm: data.radius_km,
+        ...nextViewRequest,
       }));
     } catch (error) {
       if (
@@ -612,7 +758,9 @@ export default function ProvidersPage() {
 
   const handleReset = () => {
     searchAbortRef.current?.abort();
+    routeAbortRef.current?.abort();
     requestCoordinator.invalidate();
+    routeRequestCoordinator.invalidate();
     geolocationRequestRef.current += 1;
     setSearchLoading(false);
     setSearchError(null);
@@ -625,6 +773,9 @@ export default function ProvidersPage() {
     setDisplayedProviders(allProviders);
     setResultsMode("all");
     setAppliedSearch(null);
+    setSelectedRoute(null);
+    setRouteLoadingProviderId(null);
+    setRouteError(null);
     setFocusRequest(null);
     setViewRequest((current) => ({
       id: current.id + 1,
@@ -632,11 +783,102 @@ export default function ProvidersPage() {
     }));
   };
 
-  const handleProviderFocus = (providerId: string) => {
+  const handleProviderSelect = async (providerId: string) => {
     setFocusRequest((current) => ({
       id: (current?.id ?? 0) + 1,
       providerId,
     }));
+
+    if (appliedSearch?.mode !== "road") return;
+
+    const provider = displayedProviders.find(
+      (candidate) => candidate.id === providerId
+    );
+
+    if (
+      !provider ||
+      !isRoadProvider(provider) ||
+      provider.route_status !== "reachable"
+    ) {
+      routeAbortRef.current?.abort();
+      routeRequestCoordinator.invalidate();
+      setSelectedRoute(null);
+      setRouteLoadingProviderId(null);
+      setRouteError(
+        provider &&
+          isRoadProvider(provider) &&
+          provider.route_status === "snap-too-far"
+          ? "This provider is too far from an eligible road to draw a route."
+          : "No driving route is available for this provider."
+      );
+      return;
+    }
+
+    if (selectedRoute?.provider_id === providerId) {
+      routeAbortRef.current?.abort();
+      routeRequestCoordinator.invalidate();
+      setRouteLoadingProviderId(null);
+      setRouteError(null);
+      setSelectedRoute((current) =>
+        current ? { ...current } : current
+      );
+      return;
+    }
+
+    const requestId = routeRequestCoordinator.start();
+    const controller = new AbortController();
+    routeAbortRef.current?.abort();
+    routeAbortRef.current = controller;
+    setRouteLoadingProviderId(providerId);
+    setRouteError(null);
+
+    const routeParams = new URLSearchParams({
+      latitude: String(appliedSearch.origin.latitude),
+      longitude: String(appliedSearch.origin.longitude),
+      provider_id: providerId,
+    });
+
+    try {
+      const response = await fetch(
+        `/api/providers/road/routes?${routeParams.toString()}`,
+        { signal: controller.signal, cache: "no-store" }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          await readApiError(response, "Unable to load this road route")
+        );
+      }
+
+      const data = (await response.json()) as RoadRouteResponse;
+
+      if (
+        controller.signal.aborted ||
+        !routeRequestCoordinator.isCurrent(requestId)
+      ) {
+        return;
+      }
+
+      setSelectedRoute(data);
+    } catch (error) {
+      if (
+        controller.signal.aborted ||
+        !routeRequestCoordinator.isCurrent(requestId)
+      ) {
+        return;
+      }
+
+      setSelectedRoute(null);
+      setRouteError(
+        error instanceof Error
+          ? error.message
+          : "Unable to load this road route."
+      );
+    } finally {
+      if (routeRequestCoordinator.isCurrent(requestId)) {
+        setRouteLoadingProviderId(null);
+      }
+    }
   };
 
   const handleToolbarLayoutChange = useCallback(() => {
@@ -646,7 +888,14 @@ export default function ProvidersPage() {
   const resultHeading =
     resultsMode === "all"
       ? `All providers (${displayedProviders.length})`
-      : `Nearby results (${displayedProviders.length})`;
+      : appliedSearch?.mode === "road"
+        ? `Road results (${displayedProviders.length})`
+        : `Nearby results (${displayedProviders.length})`;
+  const reachableRoadCount = displayedProviders.filter(
+    (provider) =>
+      isRoadProvider(provider) &&
+      provider.route_status === "reachable"
+  ).length;
 
   return (
     <main className="min-h-dvh bg-slate-50 px-3 py-3 text-slate-900 md:px-5 lg:h-dvh lg:min-h-[680px]">
@@ -711,6 +960,15 @@ export default function ProvidersPage() {
           </p>
         ) : null}
 
+        {routeError ? (
+          <p
+            role="alert"
+            className="mt-2 shrink-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          >
+            {routeError}
+          </p>
+        ) : null}
+
         <div className="mt-3 grid min-h-[400px] flex-1 items-stretch gap-3 lg:grid-cols-[20rem_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] xl:grid-cols-[21rem_minmax(0,1fr)]">
           <aside
             id="provider-results"
@@ -727,10 +985,17 @@ export default function ProvidersPage() {
                 {resultHeading}
               </h2>
 
-              {resultsMode === "nearby" && appliedSearch ? (
+              {resultsMode === "search" && appliedSearch ? (
                 <p className="mt-0.5 text-xs leading-4 text-slate-600">
-                  Within {appliedSearch.radius_km} km of {" "}
+                  {appliedSearch.mode === "straight-line"
+                    ? `Within ${appliedSearch.radius_km} km of `
+                    : "Shortest by road from "}
                   <strong>{appliedSearch.locationLabel}</strong>
+                  {appliedSearch.mode === "road"
+                    ? appliedSearch.max_road_distance_km === null
+                      ? " · No maximum road distance"
+                      : ` · Maximum ${appliedSearch.max_road_distance_km} km`
+                    : ""}
                   {" · "}
                   {appliedSearch.service_id
                     ? services.find(
@@ -740,6 +1005,15 @@ export default function ProvidersPage() {
                     : "All services"}
                   {" · "}
                   {appliedSearch.category ?? "All categories"}
+                </p>
+              ) : null}
+
+              {appliedSearch?.mode === "road" &&
+              displayedProviders.length > 0 &&
+              reachableRoadCount === 0 ? (
+                <p className="mt-1 text-xs font-medium text-amber-800">
+                  No matching provider is reachable on the imported road
+                  graph. Off-network providers remain listed below.
                 </p>
               ) : null}
 
@@ -756,8 +1030,10 @@ export default function ProvidersPage() {
               </p>
             ) : displayedProviders.length === 0 ? (
               <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
-                {resultsMode === "nearby"
-                  ? "No providers match this applied search. The starting location and radius remain visible on the map."
+                {resultsMode === "search"
+                  ? appliedSearch?.mode === "road"
+                    ? "No providers match this applied road search. The starting location remains visible on the map."
+                    : "No providers match this applied search. The starting location and radius remain visible on the map."
                   : "No active providers with coordinates are available."}
               </p>
             ) : (
@@ -766,7 +1042,10 @@ export default function ProvidersPage() {
                   <ProviderResultCard
                     key={provider.id}
                     provider={provider}
-                    onFocus={handleProviderFocus}
+                    routeLoading={
+                      routeLoadingProviderId === provider.id
+                    }
+                    onSelect={handleProviderSelect}
                   />
                 ))}
               </div>
@@ -792,6 +1071,10 @@ export default function ProvidersPage() {
                 >
                   Click the map to choose your starting location
                 </p>
+              ) : selectedRoute ? (
+                <p className="text-xs font-medium text-slate-600">
+                  Solid line: road route · Dashed: snap access
+                </p>
               ) : null}
             </div>
 
@@ -802,7 +1085,9 @@ export default function ProvidersPage() {
               selectionMode={mapSelectionMode}
               viewRequest={viewRequest}
               focusRequest={focusRequest}
+              selectedRoute={selectedRoute}
               layoutRevision={mapLayoutRevision}
+              onProviderSelect={handleProviderSelect}
               onStartingLocationSelect={
                 handleMapStartingLocationSelect
               }
@@ -811,8 +1096,9 @@ export default function ProvidersPage() {
         </div>
 
         <footer className="mt-2 shrink-0 text-xs leading-4 text-slate-500">
-          Straight-line distance is measured over the earth&apos;s surface,
-          not by road or travel time.
+          {appliedSearch?.mode === "road"
+            ? "Road distance measures eligible road length, including partial road segments. Straight snap connectors (up to 500 m at each end) are not included."
+            : "Straight-line distance is measured over the earth's surface, not by road or travel time."}
         </footer>
       </div>
     </main>

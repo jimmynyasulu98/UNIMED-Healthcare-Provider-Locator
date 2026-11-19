@@ -10,6 +10,7 @@ UNIMED Provider Locator is an academic GIS web application for finding healthcar
 - Uses a compact two-row desktop search toolbar so the results and map remain visible at normal laptop viewport sizes.
 - Keeps manual latitude and longitude fields available in a collapsed **Advanced** disclosure.
 - Searches within 1, 5, 10, 17, 20, or 50 km.
+- Keeps **Straight-line radius** as the default and adds an optional **Shortest by road** mode backed by a separate pgRouting database.
 - Filters in PostgreSQL by assigned service and provider category.
 - Shows a red applied starting-location marker, an amber unapplied draft marker, a search-radius circle, stable distance ordering, and straight-line distances.
 - Keeps draft controls separate from the last successful search so the list and map always describe the same applied criteria.
@@ -17,12 +18,14 @@ UNIMED Provider Locator is an academic GIS web application for finding healthcar
 - Handles loading, validation, geolocation, empty-result, API-error, reset, and stale-request states.
 - Lets keyboard and pointer users focus a provider marker from its compact result card, with long service lists available through an expand/collapse control.
 - Provides a **Get directions** link in each provider map popup. It opens Google Maps with the provider's stored coordinates as the destination; no API key or geocoding request is used.
+- Labels road distances separately, reports off-network or unreachable providers, and fetches/draws route geometry only when a reachable road result is selected.
 - Gives the results list its own scroll area while the Leaflet map fills the remaining workspace and resizes without resetting the chosen map view.
 
 ## Technology
 
 - Next.js App Router, React, TypeScript, and Tailwind CSS
 - PostgreSQL with PostGIS
+- Optional pgRouting road graph imported from OpenStreetMap data
 - `pg` (`node-postgres`) with a reusable server-side connection pool
 - Leaflet 1.9.4 and OpenStreetMap tiles
 
@@ -40,6 +43,8 @@ First, create a separate database, seed the sample catalogue, verify its spatial
 3. `database/03_verify.sql`
 
 The setup is for a fresh database only. It does not replace, migrate, or clear an existing populated database.
+
+Road routing is optional and deliberately isolated from that database. To enable it, create the separate `unimed_provider_locator_routing_test` database and follow [database/routing/README.md](database/routing/README.md). That guide pins the road-data source, covers the Zomba-area extract (including St Luke and Pirimiti), preserves OSM access/one-way topology, builds metre-based costs, runs fixture and coverage checks, and creates a read-only routing login. Do not run its import or `--clean` commands against the existing application database.
 
 Install the locked JavaScript dependencies and create the local environment file:
 
@@ -65,7 +70,19 @@ Set the local values in `.env.local`:
 | `PGUSER` | Application database role |
 | `PGPASSWORD` | Application role password |
 
-Use the read-only application role created in the database guide, not the database administrator. Do not expose these variables with a `NEXT_PUBLIC_` prefix. `.env.local` and other local environment files are ignored by Git; `.env.example` contains names and placeholders only. If a password contains `#`, spaces, or other dotenv syntax characters, quote it in `.env.local`.
+The following server-only variables are optional and are used only by **Shortest by road**:
+
+| Variable | Purpose |
+| --- | --- |
+| `ROUTING_PGHOST` | Separate routing database host |
+| `ROUTING_PGPORT` | Separate routing database port |
+| `ROUTING_PGDATABASE` | Routing database name (`unimed_provider_locator_routing_test`) |
+| `ROUTING_PGUSER` | Read-only routing application role |
+| `ROUTING_PGPASSWORD` | Routing role password |
+
+Either set all five routing variables or leave all five unset. With them unset—or before the routing schema and road data are ready—the application still starts normally and straight-line search is unaffected; road mode returns a clear setup-unavailable response.
+
+Use the restricted read-only roles created in the relevant database guides, not a database administrator. Do not expose these variables with a `NEXT_PUBLIC_` prefix. `.env.local` and other local environment files are ignored by Git; `.env.example` contains names and placeholders only. If a password contains `#`, spaces, or other dotenv syntax characters, quote it in `.env.local`.
 
 Run the local checks:
 
@@ -163,6 +180,38 @@ Successful response:
 
 Invalid inputs return HTTP `400` with a generic error and safe validation details. Unexpected database failures return a generic HTTP `500` response while the useful error is logged only on the server.
 
+### `GET /api/providers/road`
+
+This optional endpoint uses the separate routing database. Query parameters:
+
+| Parameter | Required | Validation |
+| --- | --- | --- |
+| `latitude` | Yes | Finite number from -90 through 90 |
+| `longitude` | Yes | Finite number from -180 through 180 |
+| `max_road_distance_km` | No | Greater than 0 and at most 500; omitted means no maximum |
+| `service_id` | No | Positive ID assigned to an active, located provider |
+| `category` | No | Existing active provider category |
+
+The endpoint filters the provider catalogue first, snaps the origin and matching providers to eligible roads within 500 metres, calculates directed shortest paths in metres, optionally applies the maximum to the computed road distance, and sorts reachable results by unrounded road distance then provider ID. A result has one of these states:
+
+- `reachable`, with `road_distance_km`;
+- `snap-too-far`, when the origin or provider has no eligible edge within 500 metres;
+- `unreachable`, when both points snap but the directed graph has no path.
+
+Road distance includes partial first and last road segments. It excludes the straight-line gap from each stored point to its snapped road point; `origin_snap_distance_m` and `provider_snap_distance_m` expose those gaps separately. Straight-line `distance_km` is never reused for road results.
+
+Example (after optional routing setup):
+
+```text
+/api/providers/road?latitude=-15.385343687941972&longitude=35.332129450877574&max_road_distance_km=20
+```
+
+Missing routing environment variables, pgRouting functions, or imported graph data return HTTP `503` with code `ROUTING_UNAVAILABLE`. Validation returns `400`; an unexpected routing failure returns `500` with code `ROUTING_ERROR`.
+
+### `GET /api/providers/road/routes`
+
+This endpoint is called only when a user selects a reachable road result. It accepts `latitude`, `longitude`, and `provider_id`, uses the applied (not draft) starting location, and returns a network-only GeoJSON `LineString` plus the road and snap distances. The map draws the road line solid and the excluded origin/provider snap gaps as dashed access links. An inactive or unknown provider returns `404`; a valid but unsnappable or disconnected selection returns `422` with `SNAP_TOO_FAR` or `NO_ROUTE`; missing optional setup returns `503`.
+
 ### `GET /api/services`
 
 Returns services that are assigned to at least one active provider with a location. This example is abridged; the supplied seed returns 12 entries in `services`:
@@ -191,6 +240,12 @@ ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography
 
 These values are straight-line surface distances, not road-network distances, routes, travel times, or transport estimates.
 
+### Road calculation
+
+The optional graph stores one directed cost per permitted direction in metres. It keeps the importer's actual OSM node IDs as `source` and `target`, so roads connect only at real shared nodes rather than at every geometric crossing. Explicit access tags and one-way direction determine whether `cost_m` or `reverse_cost_m` is usable; negative costs remove a direction.
+
+`routing.route_costs` uses an indexed WGS84 geography nearest-edge search, records each snap fraction and evaluates direction-valid source/target endpoint combinations with `pgr_dijkstraCost`. It measures partial first/last substrings as geography lengths and adds a direct same-edge candidate, which is required for two points on one segment. `routing.route_geometry` uses the same chosen candidate and `pgr_dijkstra`, clips partial endpoint segments, preserves path order and returns the network-only line in WGS84 for Leaflet. This implementation intentionally does not depend on `pgr_withPoints*`; see the compatibility note in [database/routing/README.md](database/routing/README.md).
+
 ## Available checks
 
 ```powershell
@@ -201,6 +256,8 @@ npm run build
 ```
 
 The focused unit tests cover required, blank, malformed, duplicated, and out-of-range search parameters; stale-response invalidation; every location-selection state transition; helpful geolocation failures; manual override; applied/draft separation; and reset state. They do not connect to PostgreSQL or execute Route Handlers. Run `database/03_verify.sql` for database and spatial assertions, then use the endpoint checks in [Local setup](#local-setup) for the application-to-database path.
+
+The same JavaScript suite also covers default/switching search modes, road-limit validation, endpoint/query construction, route-request validation, and road draft canonicalisation. Directed path correctness is database-level behaviour: run `database/routing/fixtures/01_small_graph.sql` in the separate routing test database for nearest-by-road ordering, one-way, same-segment, disconnected, filter, maximum and tie cases, then run `database/routing/03_verify.sql` after the real import.
 
 ## Manual verification
 
@@ -232,14 +289,18 @@ Also verify:
 11. Missing or blank coordinates/radius, invalid IDs, and out-of-range values sent directly to the nearby API return HTTP `400`.
 12. At desktop widths, the normal toolbar, results heading, and a usable map area are visible together. At mobile widths, controls stack without horizontal overflow and the results and map remain available through normal page scrolling.
 13. Opening a provider marker popup and following **Get directions** opens Google Maps in a new tab with that provider's stored coordinates as the destination. The locator does not send a starting location in the link.
+14. Switching to **Shortest by road** does not apply until **Search nearby** is selected. Radius and its circle disappear only after a successful road search; switching the draft back does not relabel old road results.
+15. With routing intentionally unconfigured, road search reports that setup is unavailable and leaves the previous successful results intact while straight-line searches continue to work.
+16. With the routing test database configured, search from **UNIMA Clinic**, confirm distances say **Road distance**, select a reachable result and confirm a solid purple route plus clearly dashed snap-access links reach that provider. Confirm an unreachable result says **No road route available** without being treated as a database error.
 
 ## Limitations
 
 - Provider records and service assignments are a snapshot of the supplied academic catalogue, not a verified or current healthcare directory.
 - Each of the 11 provider rows preserves its stored Google Maps short link in `data_source` for provenance only. A link does not guarantee a provider's current identity, location, or services.
 - All `verified_on`, address, and phone values are unknown (`NULL`), and two categories intentionally remain unspecified because the source data contains `NULL`.
-- Distances do not account for roads, terrain, traffic, or travel time.
+- Straight-line distances do not account for roads, terrain, traffic, or travel time. Road mode measures eligible network length only; it is not a travel-time estimate.
 - Map tiles are © OpenStreetMap contributors, require internet access, and are subject to OpenStreetMap tile availability and usage policy.
 - No external geocoder is used; named starting points come only from the supplied provider records.
-- Road directions are handled by Google Maps only after a user follows **Get directions**. The locator itself does not calculate routes or travel times.
-- This version has no administration, authentication, built-in route calculation, paid services, or deployment configuration.
+- The optional OSM graph does not evaluate traffic, speeds, live closures, turn-restriction relations, barriers, time-dependent access, or conditional one-way rules. Snap connectors are straight-line approximations and are excluded from displayed road distance.
+- Imported road coverage and tags can be incomplete. The setup deliberately fails verification if any provider—including St Luke or Pirimiti—cannot snap within 500 metres; coordinates are never fabricated to make routing pass.
+- This version has no administration, authentication, paid routing service, travel-time calculation, or deployment configuration.

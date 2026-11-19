@@ -1,5 +1,10 @@
 import type { NearbySearchCriteria } from "./nearby-search";
-import type { Provider, SearchOrigin } from "../types/provider";
+import type { RoadSearchCriteria } from "./road-search";
+import type {
+  Provider,
+  SearchMode,
+  SearchOrigin,
+} from "../types/provider";
 
 export const MISSING_STARTING_LOCATION_MESSAGE =
   "Choose your location, select a starting point, or click the map.";
@@ -12,24 +17,28 @@ export type LocationSelectionSource =
   | "manual";
 
 export type SearchDraft = {
+  mode: SearchMode;
   latitude: string;
   longitude: string;
   locationSource: LocationSelectionSource;
   locationLabel: string | null;
   startingPointId: string;
   radiusKm: string;
+  maxRoadDistanceKm: string;
   serviceId: string;
   category: string;
 };
 
 export function createDefaultSearchDraft(): SearchDraft {
   return {
+    mode: "straight-line",
     latitude: "",
     longitude: "",
     locationSource: "none",
     locationLabel: null,
     startingPointId: "",
     radiusKm: "5",
+    maxRoadDistanceKm: "",
     serviceId: "",
     category: "",
   };
@@ -72,7 +81,12 @@ export function searchDraftsMatch(
 ) {
   return (
     locationDraftsMatch(first, second) &&
+    first.mode === second.mode &&
     numbersOrTextMatch(first.radiusKm, second.radiusKm) &&
+    numbersOrTextMatch(
+      first.maxRoadDistanceKm,
+      second.maxRoadDistanceKm
+    ) &&
     first.serviceId.trim() === second.serviceId.trim() &&
     first.category.trim() === second.category.trim()
   );
@@ -200,6 +214,24 @@ export function canonicalizeAppliedDraft(
     latitude: String(criteria.latitude),
     longitude: String(criteria.longitude),
     radiusKm: String(criteria.radiusKm),
+    serviceId: criteria.serviceId ?? "",
+    category: criteria.category ?? "",
+  };
+}
+
+export function canonicalizeRoadAppliedDraft(
+  criteria: RoadSearchCriteria,
+  submittedDraft: SearchDraft
+): SearchDraft {
+  return {
+    ...submittedDraft,
+    mode: "road",
+    latitude: String(criteria.latitude),
+    longitude: String(criteria.longitude),
+    maxRoadDistanceKm:
+      criteria.maxRoadDistanceKm === null
+        ? ""
+        : String(criteria.maxRoadDistanceKm),
     serviceId: criteria.serviceId ?? "",
     category: criteria.category ?? "",
   };

@@ -40,3 +40,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# downloaded / derived OpenStreetMap routing data
+/database/routing/data/*
+!/database/routing/data/.gitkeep

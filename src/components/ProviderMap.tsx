@@ -7,18 +7,25 @@ import type {
   AppliedProviderSearch,
   NearbyProvider,
   Provider,
+  RoadProvider,
+  RoadRouteResponse,
   SearchOrigin,
 } from "../types/provider";
 
-type DisplayProvider = Provider | NearbyProvider;
+type DisplayProvider = Provider | NearbyProvider | RoadProvider;
 
 export type MapViewRequest =
   | { id: number; mode: "all" }
   | {
       id: number;
-      mode: "search";
+      mode: "straight-search";
       origin: SearchOrigin;
       radiusKm: number;
+    }
+  | {
+      id: number;
+      mode: "road-search";
+      origin: SearchOrigin;
     };
 
 export type ProviderFocusRequest = {
@@ -33,7 +40,9 @@ type ProviderMapProps = {
   selectionMode: boolean;
   viewRequest: MapViewRequest;
   focusRequest: ProviderFocusRequest | null;
+  selectedRoute: RoadRouteResponse | null;
   layoutRevision: number;
+  onProviderSelect: (providerId: string) => void;
   onStartingLocationSelect: (origin: SearchOrigin) => void;
 };
 
@@ -77,6 +86,23 @@ function createProviderPopup(provider: DisplayProvider) {
     popup.appendChild(distance);
   }
 
+  if ("route_status" in provider) {
+    const distance = document.createElement("p");
+
+    if (
+      provider.route_status === "reachable" &&
+      provider.road_distance_km !== null
+    ) {
+      distance.textContent = `Road distance: ${provider.road_distance_km.toFixed(2)} km`;
+    } else if (provider.route_status === "snap-too-far") {
+      distance.textContent = "Too far from the routable road network";
+    } else {
+      distance.textContent = "No road route available";
+    }
+
+    popup.appendChild(distance);
+  }
+
   const directionsLink = document.createElement("a");
   directionsLink.href = buildGoogleMapsDirectionsUrl({
     latitude: provider.latitude,
@@ -103,7 +129,9 @@ export default function ProviderMap({
   selectionMode,
   viewRequest,
   focusRequest,
+  selectedRoute,
   layoutRevision,
+  onProviderSelect,
   onStartingLocationSelect,
 }: ProviderMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -111,16 +139,22 @@ export default function ProviderMap({
   const providerLayerRef = useRef<L.LayerGroup | null>(null);
   const searchLayerRef = useRef<L.LayerGroup | null>(null);
   const draftLayerRef = useRef<L.LayerGroup | null>(null);
+  const routeLayerRef = useRef<L.LayerGroup | null>(null);
   const markersByIdRef = useRef(new Map<string, L.CircleMarker>());
   const providerBoundsRef = useRef<L.LatLngBounds | null>(null);
   const onStartingLocationSelectRef = useRef(
     onStartingLocationSelect
   );
+  const onProviderSelectRef = useRef(onProviderSelect);
   const selectionModeRef = useRef(selectionMode);
 
   useEffect(() => {
     onStartingLocationSelectRef.current = onStartingLocationSelect;
   }, [onStartingLocationSelect]);
+
+  useEffect(() => {
+    onProviderSelectRef.current = onProviderSelect;
+  }, [onProviderSelect]);
 
   useEffect(() => {
     selectionModeRef.current = selectionMode;
@@ -135,11 +169,12 @@ export default function ProviderMap({
     const providerLayer = L.layerGroup().addTo(map);
     const searchLayer = L.layerGroup().addTo(map);
     const draftLayer = L.layerGroup().addTo(map);
+    const routeLayer = L.layerGroup().addTo(map);
     const markersById = markersByIdRef.current;
 
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution:
-        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        'Map and road data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>, ODbL 1.0',
       maxZoom: 19,
     }).addTo(map);
 
@@ -180,6 +215,7 @@ export default function ProviderMap({
     providerLayerRef.current = providerLayer;
     searchLayerRef.current = searchLayer;
     draftLayerRef.current = draftLayer;
+    routeLayerRef.current = routeLayer;
 
     return () => {
       resizeObserver.disconnect();
@@ -193,6 +229,7 @@ export default function ProviderMap({
       providerLayerRef.current = null;
       searchLayerRef.current = null;
       draftLayerRef.current = null;
+      routeLayerRef.current = null;
       mapRef.current = null;
       map.remove();
     };
@@ -226,6 +263,12 @@ export default function ProviderMap({
         .bindPopup(createProviderPopup(provider))
         .addTo(providerLayer);
 
+      const handleMarkerSelect = () => {
+        onProviderSelectRef.current(provider.id);
+      };
+
+      marker.on("click", handleMarkerSelect);
+
       const element = marker.getElement();
 
       if (element) {
@@ -245,11 +288,13 @@ export default function ProviderMap({
           ) {
             event.preventDefault();
             marker.openPopup();
+            onProviderSelectRef.current(provider.id);
           }
         };
 
         element.addEventListener("keydown", handleMarkerKeyDown);
         marker.once("remove", () => {
+          marker.off("click", handleMarkerSelect);
           element.removeEventListener(
             "keydown",
             handleMarkerKeyDown
@@ -278,18 +323,23 @@ export default function ProviderMap({
       appliedSearch.origin.longitude,
     ];
 
-    L.circle(position, {
-      radius: appliedSearch.radius_km * 1000,
-      color: "#1d4ed8",
-      weight: 2,
-      dashArray: "7 7",
-      fillColor: "#3b82f6",
-      fillOpacity: 0.08,
-      interactive: false,
-    }).addTo(searchLayer);
+    if (appliedSearch.mode === "straight-line") {
+      L.circle(position, {
+        radius: appliedSearch.radius_km * 1000,
+        color: "#1d4ed8",
+        weight: 2,
+        dashArray: "7 7",
+        fillColor: "#3b82f6",
+        fillOpacity: 0.08,
+        interactive: false,
+      }).addTo(searchLayer);
+    }
 
     const startingLocationPopup = document.createElement("strong");
-    startingLocationPopup.textContent = "Applied starting location";
+    startingLocationPopup.textContent =
+      appliedSearch.mode === "road"
+        ? "Applied road-search starting location"
+        : "Applied starting location";
 
     L.circleMarker(position, {
       radius: 9,
@@ -332,13 +382,105 @@ export default function ProviderMap({
 
   useEffect(() => {
     const map = mapRef.current;
+    const routeLayer = routeLayerRef.current;
+
+    if (!map || !routeLayer) return;
+
+    routeLayer.clearLayers();
+
+    if (!selectedRoute) return;
+
+    const route = L.geoJSON(selectedRoute.geometry, {
+      style: {
+        color: "#7c3aed",
+        weight: 6,
+        opacity: 0.9,
+        lineCap: "round",
+        lineJoin: "round",
+      },
+      interactive: false,
+    }).addTo(routeLayer);
+    const bounds = route.getBounds();
+    const routeCoordinates = selectedRoute.geometry.coordinates;
+    const firstCoordinate = routeCoordinates[0];
+    const lastCoordinate = routeCoordinates[routeCoordinates.length - 1];
+    const selectedProvider = providers.find(
+      (provider) => provider.id === selectedRoute.provider_id
+    );
+
+    if (
+      appliedSearch?.mode === "road" &&
+      firstCoordinate
+    ) {
+      const originPosition: L.LatLngTuple = [
+        appliedSearch.origin.latitude,
+        appliedSearch.origin.longitude,
+      ];
+
+      L.polyline(
+        [
+          originPosition,
+          [firstCoordinate[1], firstCoordinate[0]],
+        ],
+        {
+          color: "#64748b",
+          weight: 2,
+          opacity: 0.8,
+          dashArray: "4 6",
+          interactive: false,
+        }
+      ).addTo(routeLayer);
+      bounds.extend(originPosition);
+    }
+
+    if (
+      selectedProvider &&
+      hasValidCoordinates(selectedProvider) &&
+      lastCoordinate
+    ) {
+      const providerPosition: L.LatLngTuple = [
+        selectedProvider.latitude,
+        selectedProvider.longitude,
+      ];
+
+      L.polyline(
+        [
+          [lastCoordinate[1], lastCoordinate[0]],
+          providerPosition,
+        ],
+        {
+          color: "#64748b",
+          weight: 2,
+          opacity: 0.8,
+          dashArray: "4 6",
+          interactive: false,
+        }
+      ).addTo(routeLayer);
+      bounds.extend(providerPosition);
+    }
+
+    if (!bounds.isValid()) return;
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      map.invalidateSize();
+      map.fitBounds(bounds, {
+        padding: [35, 35],
+        maxZoom: 17,
+      });
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [appliedSearch, providers, selectedRoute]);
+
+  useEffect(() => {
+    const map = mapRef.current;
 
     if (!map) return;
 
     const animationFrame = window.requestAnimationFrame(() => {
       map.invalidateSize();
 
-      if (viewRequest.mode === "search") {
+      if (viewRequest.mode === "straight-search") {
         const searchBounds = L.latLng(
           viewRequest.origin.latitude,
           viewRequest.origin.longitude
@@ -348,6 +490,36 @@ export default function ProviderMap({
           padding: [30, 30],
           maxZoom: 15,
         });
+        return;
+      }
+
+      if (viewRequest.mode === "road-search") {
+        const roadBounds = providerBoundsRef.current
+          ? L.latLngBounds(
+              providerBoundsRef.current.getSouthWest(),
+              providerBoundsRef.current.getNorthEast()
+            )
+          : L.latLngBounds([]);
+
+        roadBounds.extend([
+          viewRequest.origin.latitude,
+          viewRequest.origin.longitude,
+        ]);
+
+        if (roadBounds.isValid()) {
+          map.fitBounds(roadBounds, {
+            padding: [35, 35],
+            maxZoom: 14,
+          });
+        } else {
+          map.setView(
+            [
+              viewRequest.origin.latitude,
+              viewRequest.origin.longitude,
+            ],
+            13
+          );
+        }
         return;
       }
 
