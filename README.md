@@ -29,15 +29,29 @@ UNIMED Provider Locator is an academic GIS web application for finding healthcar
 
 Prerequisites:
 
-- A supported Node.js release and npm
-- PostgreSQL with PostGIS
-- The existing `unimed_provider_locator` database, tables, provider records, service assignments, and `providers.location` GiST index
+- Node.js 22 LTS (minimum `22.6.0`) and npm. Next.js supports older Node versions, but this repository's test command requires the type-stripping support added in Node 22.6.
+- PostgreSQL with a matching PostGIS server package. The inspected source environment used PostgreSQL 18.3 and PostGIS 3.7.0.
 
-Install and configure the project:
+First, create a separate database, seed the sample catalogue, verify its spatial results, and create a read-only application login. Follow [database/README.md](database/README.md) in full. It provides both Windows pgAdmin and `psql` instructions and runs these files in order:
+
+1. `database/01_schema.sql`
+2. `database/02_seed.sql`
+3. `database/03_verify.sql`
+
+The setup is for a fresh database only. It does not replace, migrate, or clear an existing populated database.
+
+Install the locked JavaScript dependencies and create the local environment file:
 
 ```powershell
-npm install
+npm ci
 Copy-Item .env.example .env.local
+```
+
+On macOS or Linux, use:
+
+```bash
+npm ci
+cp .env.example .env.local
 ```
 
 Set the local values in `.env.local`:
@@ -50,7 +64,16 @@ Set the local values in `.env.local`:
 | `PGUSER` | Application database role |
 | `PGPASSWORD` | Application role password |
 
-Do not expose these variables with a `NEXT_PUBLIC_` prefix. `.env.local` and other local environment files are ignored by Git; `.env.example` contains names and placeholders only.
+Use the read-only application role created in the database guide, not the database administrator. Do not expose these variables with a `NEXT_PUBLIC_` prefix. `.env.local` and other local environment files are ignored by Git; `.env.example` contains names and placeholders only. If a password contains `#`, spaces, or other dotenv syntax characters, quote it in `.env.local`.
+
+Run the local checks:
+
+```powershell
+npm run test
+npm run typecheck
+npm run lint
+npm run build
+```
 
 Start the development server:
 
@@ -58,13 +81,19 @@ Start the development server:
 npm run dev
 ```
 
-Open [http://localhost:3000/providers](http://localhost:3000/providers).
+Open [http://localhost:3000/providers](http://localhost:3000/providers). With the supplied seed, these startup checks should report `11`, `12`, and `9` respectively:
+
+```powershell
+(Invoke-RestMethod 'http://localhost:3000/api/providers').count
+(Invoke-RestMethod 'http://localhost:3000/api/services').count
+(Invoke-RestMethod 'http://localhost:3000/api/providers/nearby?latitude=-15.385343687941972&longitude=35.332129450877574&radius_km=5').count
+```
 
 ## API
 
 ### `GET /api/providers`
 
-Returns every active provider with a location:
+Returns every active provider with a location. This example is abridged; the supplied seed returns 11 entries in `providers`:
 
 ```json
 {
@@ -72,14 +101,14 @@ Returns every active provider with a location:
   "providers": [
     {
       "id": "1",
-      "name": "Example provider",
-      "category": "Clinic",
+      "name": "Malmed",
+      "category": "Private",
       "district": "Zomba",
       "address": null,
       "phone": null,
-      "latitude": -15.3853,
-      "longitude": 35.3321,
-      "services": ["General consultation"]
+      "latitude": -15.383457318605885,
+      "longitude": 35.322093933683,
+      "services": ["General OPD"]
     }
   ]
 }
@@ -135,11 +164,11 @@ Invalid inputs return HTTP `400` with a generic error and safe validation detail
 
 ### `GET /api/services`
 
-Returns services that are assigned to at least one active provider with a location:
+Returns services that are assigned to at least one active provider with a location. This example is abridged; the supplied seed returns 12 entries in `services`:
 
 ```json
 {
-  "count": 1,
+  "count": 12,
   "services": [
     {
       "id": "1",
@@ -170,7 +199,7 @@ npm run lint
 npm run build
 ```
 
-The focused tests cover required, blank, malformed, duplicated, and out-of-range search parameters; stale-response invalidation; every location-selection state transition; helpful geolocation failures; manual override; applied/draft separation; and reset state.
+The focused unit tests cover required, blank, malformed, duplicated, and out-of-range search parameters; stale-response invalidation; every location-selection state transition; helpful geolocation failures; manual override; applied/draft separation; and reset state. They do not connect to PostgreSQL or execute Route Handlers. Run `database/03_verify.sql` for database and spatial assertions, then use the endpoint checks in [Local setup](#local-setup) for the application-to-database path.
 
 ## Manual verification
 
@@ -204,9 +233,10 @@ Also verify:
 
 ## Limitations
 
-- Provider records and service assignments are the supplied academic dataset and may not be complete or current.
-- Categories intentionally remain unspecified where the source data contains `NULL`.
+- Provider records and service assignments are a snapshot of the supplied academic catalogue, not a verified or current healthcare directory.
+- Each of the 11 provider rows preserves its stored Google Maps short link in `data_source` for provenance only. A link does not guarantee a provider's current identity, location, or services.
+- All `verified_on`, address, and phone values are unknown (`NULL`), and two categories intentionally remain unspecified because the source data contains `NULL`.
 - Distances do not account for roads, terrain, traffic, or travel time.
-- Map tiles require internet access and are subject to OpenStreetMap tile availability and usage policy.
+- Map tiles are © OpenStreetMap contributors, require internet access, and are subject to OpenStreetMap tile availability and usage policy.
 - No external geocoder is used; named starting points come only from the supplied provider records.
 - This version has no administration, authentication, routing, paid services, or deployment configuration.

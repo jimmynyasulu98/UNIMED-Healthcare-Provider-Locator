@@ -40,8 +40,8 @@ test("accepts the documented UNIMA Clinic search origin", () => {
     latitude: "-15.385343687941972",
     longitude: "35.332129450877574",
     radius_km: "5",
-    service_id: "2",
-    category: "Clinic",
+    service_id: "1",
+    category: "University",
   });
 
   assert.equal(result.ok, true);
@@ -51,8 +51,8 @@ test("accepts the documented UNIMA Clinic search origin", () => {
       latitude: -15.385343687941972,
       longitude: 35.332129450877574,
       radiusKm: 5,
-      serviceId: "2",
-      category: "Clinic",
+      serviceId: "1",
+      category: "University",
     });
   }
 });
@@ -276,8 +276,8 @@ test("clearing or resetting removes location and filter state", () => {
   const selected = {
     ...selectProviderLocation(createDefaultSearchDraft(), unimaClinic),
     radiusKm: "20",
-    serviceId: "2",
-    category: "Clinic",
+    serviceId: "1",
+    category: "University",
   };
   const locationCleared = clearSelectedLocation(selected);
   const reset = createDefaultSearchDraft();
