@@ -6,13 +6,17 @@ UNIMED Provider Locator is an academic GIS web application for finding healthcar
 
 - Displays active providers with coordinates in a list and on a Leaflet map.
 - Loads provider and service information from PostgreSQL through server-only Next.js Route Handlers.
-- Accepts a map click, editable coordinates, or an explicitly requested browser location as a search origin.
+- Offers explicit **Use my location** and **Choose on map** actions plus a starting-point dropdown populated from the complete provider directory.
+- Uses a compact two-row desktop search toolbar so the results and map remain visible at normal laptop viewport sizes.
+- Keeps manual latitude and longitude fields available in a collapsed **Advanced** disclosure.
 - Searches within 1, 5, 10, 17, 20, or 50 km.
 - Filters in PostgreSQL by assigned service and provider category.
-- Shows an applied origin marker, search-radius circle, stable distance ordering, and straight-line distances.
+- Shows a red applied starting-location marker, an amber unapplied draft marker, a search-radius circle, stable distance ordering, and straight-line distances.
 - Keeps draft controls separate from the last successful search so the list and map always describe the same applied criteria.
+- Requests browser geolocation only after the user selects **Use my location**, with map and provider alternatives when location access fails.
 - Handles loading, validation, geolocation, empty-result, API-error, reset, and stale-request states.
-- Lets keyboard and pointer users focus a provider marker from its result card.
+- Lets keyboard and pointer users focus a provider marker from its compact result card, with long service lists available through an expand/collapse control.
+- Gives the results list its own scroll area while the Leaflet map fills the remaining workspace and resizes without resetting the chosen map view.
 
 ## Technology
 
@@ -147,7 +151,7 @@ Returns services that are assigned to at least one active provider with a locati
 
 ## Spatial calculation
 
-The nearby endpoint constructs the origin as a WGS84 geography point with longitude first:
+The nearby endpoint constructs the starting location as a WGS84 geography point with longitude first:
 
 ```sql
 ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography
@@ -166,11 +170,11 @@ npm run lint
 npm run build
 ```
 
-The focused tests cover required, blank, malformed, duplicated, and out-of-range search parameters plus stale-response invalidation.
+The focused tests cover required, blank, malformed, duplicated, and out-of-range search parameters; stale-response invalidation; every location-selection state transition; helpful geolocation failures; manual override; applied/draft separation; and reset state.
 
 ## Manual verification
 
-Use the known UNIMA Clinic origin:
+Use the known UNIMA Clinic starting point from the dropdown. Its stored coordinates are also useful when checking the advanced manual fields:
 
 - Latitude: `-15.385343687941972`
 - Longitude: `35.332129450877574`
@@ -185,15 +189,18 @@ With no service or category filter, verify the current data returns:
 
 Also verify:
 
-1. A map click updates only the draft coordinates until **Find nearby providers** is selected.
-2. Editing an applied search shows the unapplied-changes notice without moving the existing circle or replacing results.
-3. Service and category filters reduce the results appropriately.
-4. A no-result search keeps the red origin and radius circle visible.
-5. **Show all providers** cancels an in-flight search and restores all providers.
-6. Rapid consecutive searches cannot let an older response replace a newer one.
-7. Clicking a provider card focuses its blue marker and opens its popup.
-8. Missing or blank coordinates/radius, invalid IDs, and out-of-range values return HTTP `400`.
-9. Denying location permission shows a helpful fallback and does not prevent manual or map-based searching.
+1. Loading the page does not request location permission. **Use my location** labels a successful choice as **Your current location**; denial or an unavailable position suggests the map and starting-point dropdown.
+2. **Choose on map** scrolls the map into view, shows **Click the map to choose your starting location**, and creates an amber draft marker only after a map click.
+3. Choosing **UNIMA Clinic** uses its stored coordinates and displays its name. The dropdown continues to contain the complete provider list even after a filtered or zero-result search.
+4. Editing either field in **Advanced** changes the summary to **Manually entered location** and clears any current-location or provider identity.
+5. Selecting **Search nearby** without a location shows only: **Choose your location, select a starting point, or click the map.** Partial, malformed, or out-of-range manual coordinates show detailed coordinate validation.
+6. After a completed search, choosing another location changes only the draft summary and amber marker. The existing list, red marker, circle, and applied summary remain aligned until **Search nearby** is selected again.
+7. Service and category filters reduce the results appropriately and preserve nearest-first ordering and **Straight-line distance** labels.
+8. A valid search around `0, 0` produces zero results while keeping its applied starting location and radius visible.
+9. **Reset** cancels an in-flight search, clears location and filters, removes search markers and the circle, and restores the complete map and list.
+10. Rapid consecutive searches cannot let an older response replace a newer one, and clicking a provider card still focuses its blue map marker and opens its popup.
+11. Missing or blank coordinates/radius, invalid IDs, and out-of-range values sent directly to the nearby API return HTTP `400`.
+12. At desktop widths, the normal toolbar, results heading, and a usable map area are visible together. At mobile widths, controls stack without horizontal overflow and the results and map remain available through normal page scrolling.
 
 ## Limitations
 
@@ -201,4 +208,5 @@ Also verify:
 - Categories intentionally remain unspecified where the source data contains `NULL`.
 - Distances do not account for roads, terrain, traffic, or travel time.
 - Map tiles require internet access and are subject to OpenStreetMap tile availability and usage policy.
+- No external geocoder is used; named starting points come only from the supplied provider records.
 - This version has no administration, authentication, routing, paid services, or deployment configuration.

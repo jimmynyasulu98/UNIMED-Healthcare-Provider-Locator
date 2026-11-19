@@ -11,7 +11,6 @@ import {
 } from "react";
 import ProviderSearchForm, {
   type GeolocationStatus,
-  type SearchDraft,
 } from "../../components/ProviderSearchForm";
 import type {
   MapViewRequest,
@@ -19,8 +18,23 @@ import type {
 } from "../../components/ProviderMap";
 import { LatestRequestCoordinator } from "../../lib/latest-request";
 import {
+  MISSING_STARTING_LOCATION_MESSAGE,
+  canonicalizeAppliedDraft,
+  clearSelectedLocation,
+  createDefaultSearchDraft,
+  geolocationFailureMessage,
+  getValidDraftOrigin,
+  isStartingLocationBlank,
+  locationDraftsMatch,
+  searchDraftsMatch,
+  selectCurrentLocation,
+  selectMapLocation,
+  selectProviderLocation,
+  updateManualCoordinate,
+  type SearchDraft,
+} from "../../lib/provider-search-state";
+import {
   validateNearbySearchParams,
-  type NearbySearchCriteria,
   type NearbySearchValidationError,
 } from "../../lib/nearby-search";
 import type {
@@ -40,34 +54,19 @@ const ProviderMap = dynamic(
   {
     ssr: false,
     loading: () => (
-      <div className="flex h-[520px] items-center justify-center rounded-xl bg-slate-100 text-slate-600 md:h-[640px]">
+      <div className="flex min-h-[380px] w-full flex-1 items-center justify-center bg-slate-100 text-slate-600 lg:min-h-0">
         Loading map…
       </div>
     ),
   }
 );
 
-const DEFAULT_DRAFT: SearchDraft = {
-  latitude: "",
-  longitude: "",
-  radiusKm: "5",
-  serviceId: "",
-  category: "",
-};
-
 type InitialStatus = "loading" | "success" | "error";
 type ResultsMode = "all" | "nearby";
 type DisplayProvider = Provider | NearbyProvider;
-
-function draftsMatch(first: SearchDraft, second: SearchDraft) {
-  return (
-    first.latitude === second.latitude &&
-    first.longitude === second.longitude &&
-    first.radiusKm === second.radiusKm &&
-    first.serviceId === second.serviceId &&
-    first.category === second.category
-  );
-}
+type AppliedSearchView = AppliedProviderSearch & {
+  locationLabel: string;
+};
 
 function createSearchParams(draft: SearchDraft) {
   const searchParams = new URLSearchParams();
@@ -84,16 +83,6 @@ function createSearchParams(draft: SearchDraft) {
   }
 
   return searchParams;
-}
-
-function criteriaToDraft(criteria: NearbySearchCriteria): SearchDraft {
-  return {
-    latitude: String(criteria.latitude),
-    longitude: String(criteria.longitude),
-    radiusKm: String(criteria.radiusKm),
-    serviceId: criteria.serviceId ?? "",
-    category: criteria.category ?? "",
-  };
 }
 
 async function readApiError(
@@ -119,6 +108,86 @@ function isNearbyProvider(
   return "distance_km" in provider;
 }
 
+type ProviderResultCardProps = {
+  provider: DisplayProvider;
+  onFocus: (providerId: string) => void;
+};
+
+function ProviderResultCard({
+  provider,
+  onFocus,
+}: ProviderResultCardProps) {
+  const visibleServices = provider.services.slice(0, 2);
+  const additionalServices = provider.services.slice(2);
+
+  return (
+    <article className="min-w-0 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm transition hover:border-blue-300 hover:shadow-md">
+      <div className="min-w-0 px-3 pt-2.5">
+        <h3 className="break-words text-sm font-semibold leading-5 text-slate-950">
+          {provider.name}
+        </h3>
+
+        <p className="mt-0.5 text-xs font-medium text-blue-700">
+          {provider.category ?? "Category not specified"}
+        </p>
+
+        {visibleServices.length > 0 ? (
+          <div className="mt-1.5 text-xs leading-4 text-slate-600">
+            <span className="font-semibold text-slate-700">
+              Services: {" "}
+            </span>
+            <span className="break-words">
+              {visibleServices.join(", ")}
+            </span>
+
+            {additionalServices.length > 0 ? (
+              <details className="mt-0.5">
+                <summary className="-ml-1 inline-flex min-h-11 cursor-pointer items-center rounded-sm px-1 font-semibold text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 lg:min-h-9">
+                  Show {additionalServices.length} more
+                </summary>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                  {additionalServices.map((service, index) => (
+                    <li
+                      key={`${service}-${index}`}
+                      className="break-words"
+                    >
+                      {service}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-1.5 text-xs text-slate-600">
+            Services not specified
+          </p>
+        )}
+      </div>
+
+      <div className="mt-2 flex min-h-10 items-center justify-between gap-2 border-t border-slate-100 px-3 py-1.5">
+        {isNearbyProvider(provider) ? (
+          <p className="min-w-0 text-xs font-semibold text-slate-700">
+            Straight-line distance: {" "}
+            {provider.distance_km.toFixed(2)} km
+          </p>
+        ) : (
+          <span aria-hidden="true" />
+        )}
+
+        <button
+          type="button"
+          onClick={() => onFocus(provider.id)}
+          aria-label={`Show ${provider.name} on map`}
+          className="min-h-11 shrink-0 rounded-md px-2.5 text-xs font-semibold text-blue-700 transition hover:bg-blue-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 lg:min-h-9"
+        >
+          Show on map
+        </button>
+      </div>
+    </article>
+  );
+}
+
 export default function ProvidersPage() {
   const [allProviders, setAllProviders] = useState<Provider[]>([]);
   const [displayedProviders, setDisplayedProviders] = useState<
@@ -133,24 +202,26 @@ export default function ProvidersPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [resultsMode, setResultsMode] =
     useState<ResultsMode>("all");
-  const [draft, setDraft] = useState<SearchDraft>({
-    ...DEFAULT_DRAFT,
-  });
-  const [appliedDraft, setAppliedDraft] = useState<SearchDraft>({
-    ...DEFAULT_DRAFT,
-  });
+  const [draft, setDraft] = useState<SearchDraft>(
+    createDefaultSearchDraft
+  );
+  const [appliedDraft, setAppliedDraft] = useState<SearchDraft>(
+    createDefaultSearchDraft
+  );
   const [appliedSearch, setAppliedSearch] =
-    useState<AppliedProviderSearch | null>(null);
+    useState<AppliedSearchView | null>(null);
   const [validationErrors, setValidationErrors] = useState<
     NearbySearchValidationError[]
   >([]);
+  const [locationError, setLocationError] = useState<string | null>(
+    null
+  );
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [geolocationStatus, setGeolocationStatus] =
     useState<GeolocationStatus>({ state: "idle", message: null });
-  const [originNotice, setOriginNotice] = useState<string | null>(
-    null
-  );
+  const [mapSelectionMode, setMapSelectionMode] = useState(false);
+  const [mapLayoutRevision, setMapLayoutRevision] = useState(0);
   const [viewRequest, setViewRequest] = useState<MapViewRequest>({
     id: 0,
     mode: "all",
@@ -159,6 +230,8 @@ export default function ProvidersPage() {
     useState<ProviderFocusRequest | null>(null);
   const searchAbortRef = useRef<AbortController | null>(null);
   const geolocationRequestRef = useRef(0);
+  const mapSectionRef = useRef<HTMLElement | null>(null);
+  const mapInstructionRef = useRef<HTMLParagraphElement | null>(null);
   const [requestCoordinator] = useState(
     () => new LatestRequestCoordinator()
   );
@@ -257,51 +330,122 @@ export default function ProvidersPage() {
     );
   }, [allProviders]);
 
-  const hasUnappliedChanges = !draftsMatch(draft, appliedDraft);
+  const hasUnappliedChanges = !searchDraftsMatch(
+    draft,
+    appliedDraft
+  );
+  const hasUnappliedLocationChange = !locationDraftsMatch(
+    draft,
+    appliedDraft
+  );
+  const draftLocationForMap = hasUnappliedLocationChange
+    ? getValidDraftOrigin(draft)
+    : null;
 
-  const updateDraft = useCallback(
-    (field: keyof SearchDraft, value: string) => {
+  const clearDraftMessages = useCallback(() => {
+    setValidationErrors([]);
+    setLocationError(null);
+    setSearchError(null);
+  }, []);
+
+  const handleFilterChange = useCallback(
+    (
+      field: "radiusKm" | "serviceId" | "category",
+      value: string
+    ) => {
       setDraft((current) => ({ ...current, [field]: value }));
       setValidationErrors([]);
       setSearchError(null);
-
-      if (field === "latitude" || field === "longitude") {
-        geolocationRequestRef.current += 1;
-        setGeolocationStatus({ state: "idle", message: null });
-        setOriginNotice("Coordinates edited manually.");
-      }
     },
     []
   );
 
-  const handleMapOriginSelect = useCallback(
+  const handleManualCoordinateChange = useCallback(
+    (field: "latitude" | "longitude", value: string) => {
+      geolocationRequestRef.current += 1;
+      setMapSelectionMode(false);
+      setGeolocationStatus({ state: "idle", message: null });
+      clearDraftMessages();
+      setDraft((current) =>
+        updateManualCoordinate(current, field, value)
+      );
+    },
+    [clearDraftMessages]
+  );
+
+  const handleStartingPointChange = useCallback(
+    (providerId: string) => {
+      geolocationRequestRef.current += 1;
+      setMapSelectionMode(false);
+      setGeolocationStatus({ state: "idle", message: null });
+      clearDraftMessages();
+
+      if (providerId === "") {
+        setDraft((current) => clearSelectedLocation(current));
+        return;
+      }
+
+      const provider = allProviders.find(
+        (candidate) => candidate.id === providerId
+      );
+
+      if (!provider) return;
+
+      setDraft((current) =>
+        selectProviderLocation(current, provider)
+      );
+    },
+    [allProviders, clearDraftMessages]
+  );
+
+  const handleChooseMap = useCallback(() => {
+    if (mapSelectionMode) {
+      setMapSelectionMode(false);
+      return;
+    }
+
+    geolocationRequestRef.current += 1;
+    setGeolocationStatus({ state: "idle", message: null });
+    clearDraftMessages();
+    setMapSelectionMode(true);
+
+    window.requestAnimationFrame(() => {
+      const reduceMotion = window.matchMedia(
+        "(prefers-reduced-motion: reduce)"
+      ).matches;
+
+      mapSectionRef.current?.scrollIntoView({
+        behavior: reduceMotion ? "auto" : "smooth",
+        block: "start",
+      });
+      mapInstructionRef.current?.focus({ preventScroll: true });
+    });
+  }, [clearDraftMessages, mapSelectionMode]);
+
+  const handleMapStartingLocationSelect = useCallback(
     (origin: SearchOrigin) => {
+      if (!mapSelectionMode) return;
+
       geolocationRequestRef.current += 1;
       setGeolocationStatus({ state: "idle", message: null });
-      setOriginNotice(
-        "Origin selected from the map. Apply the search to update results."
-      );
-      setValidationErrors([]);
-      setSearchError(null);
-      setDraft((current) => ({
-        ...current,
-        latitude: origin.latitude.toFixed(6),
-        longitude: origin.longitude.toFixed(6),
-      }));
+      setMapSelectionMode(false);
+      clearDraftMessages();
+      setDraft((current) => selectMapLocation(current, origin));
     },
-    []
+    [clearDraftMessages, mapSelectionMode]
   );
 
   const handleUseLocation = useCallback(() => {
     geolocationRequestRef.current += 1;
     const requestId = geolocationRequestRef.current;
-    setOriginNotice(null);
+    setMapSelectionMode(false);
+    clearDraftMessages();
 
     if (!("geolocation" in navigator)) {
       setGeolocationStatus({
         state: "error",
         message:
-          "Location is unavailable in this browser. Enter coordinates or click the map instead.",
+          "Location is unavailable in this browser. Choose on map or select a starting point instead.",
       });
       return;
     }
@@ -315,30 +459,26 @@ export default function ProvidersPage() {
       (position) => {
         if (requestId !== geolocationRequestRef.current) return;
 
-        setDraft((current) => ({
-          ...current,
-          latitude: position.coords.latitude.toFixed(6),
-          longitude: position.coords.longitude.toFixed(6),
-        }));
-        setValidationErrors([]);
-        setSearchError(null);
+        setDraft((current) =>
+          selectCurrentLocation(current, {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          })
+        );
+        clearDraftMessages();
         setGeolocationStatus({
           state: "success",
           message:
-            "Location added to the inputs. Apply the search to update results.",
+            "Your current location is selected. Search nearby to apply it.",
         });
       },
       (error) => {
         if (requestId !== geolocationRequestRef.current) return;
 
-        const message =
-          error.code === 1
-            ? "Location permission was denied. Enter coordinates or click the map instead."
-            : error.code === 2
-              ? "Your location is currently unavailable. Enter coordinates or click the map instead."
-              : "Getting your location timed out. Try again or enter coordinates manually.";
-
-        setGeolocationStatus({ state: "error", message });
+        setGeolocationStatus({
+          state: "error",
+          message: geolocationFailureMessage(error.code),
+        });
       },
       {
         enableHighAccuracy: true,
@@ -346,16 +486,25 @@ export default function ProvidersPage() {
         maximumAge: 0,
       }
     );
-  }, []);
+  }, [clearDraftMessages]);
 
   const handleSearch = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
     const submittedDraft = { ...draft };
+
+    if (isStartingLocationBlank(submittedDraft)) {
+      setLocationError(MISSING_STARTING_LOCATION_MESSAGE);
+      setValidationErrors([]);
+      setSearchError(null);
+      return;
+    }
+
     const searchParams = createSearchParams(submittedDraft);
     const validation = validateNearbySearchParams(searchParams);
 
     if (!validation.ok) {
+      setLocationError(null);
       setValidationErrors(validation.errors);
       setSearchError(null);
       return;
@@ -367,6 +516,8 @@ export default function ProvidersPage() {
 
     searchAbortRef.current?.abort();
     searchAbortRef.current = controller;
+    setMapSelectionMode(false);
+    setLocationError(null);
     setValidationErrors([]);
     setSearchError(null);
     setSearchLoading(true);
@@ -409,12 +560,18 @@ export default function ProvidersPage() {
         return;
       }
 
-      const canonicalDraft = criteriaToDraft(criteria);
-      const nextAppliedSearch: AppliedProviderSearch = {
+      const canonicalDraft = canonicalizeAppliedDraft(
+        criteria,
+        submittedDraft
+      );
+      const nextAppliedSearch: AppliedSearchView = {
         origin: data.origin,
         radius_km: data.radius_km,
         service_id: criteria.serviceId,
         category: criteria.category,
+        locationLabel:
+          submittedDraft.locationLabel ??
+          "Manually entered location",
       };
 
       setDisplayedProviders(data.providers);
@@ -422,7 +579,9 @@ export default function ProvidersPage() {
       setAppliedSearch(nextAppliedSearch);
       setAppliedDraft(canonicalDraft);
       setDraft((current) =>
-        draftsMatch(current, submittedDraft) ? canonicalDraft : current
+        searchDraftsMatch(current, submittedDraft)
+          ? canonicalDraft
+          : current
       );
       setFocusRequest(null);
       setViewRequest((current) => ({
@@ -458,10 +617,11 @@ export default function ProvidersPage() {
     setSearchLoading(false);
     setSearchError(null);
     setValidationErrors([]);
+    setLocationError(null);
     setGeolocationStatus({ state: "idle", message: null });
-    setOriginNotice(null);
-    setDraft({ ...DEFAULT_DRAFT });
-    setAppliedDraft({ ...DEFAULT_DRAFT });
+    setMapSelectionMode(false);
+    setDraft(createDefaultSearchDraft());
+    setAppliedDraft(createDefaultSearchDraft());
     setDisplayedProviders(allProviders);
     setResultsMode("all");
     setAppliedSearch(null);
@@ -479,62 +639,63 @@ export default function ProvidersPage() {
     }));
   };
 
+  const handleToolbarLayoutChange = useCallback(() => {
+    setMapLayoutRevision((current) => current + 1);
+  }, []);
+
   const resultHeading =
     resultsMode === "all"
       ? `All providers (${displayedProviders.length})`
       : `Nearby results (${displayedProviders.length})`;
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-8 text-slate-900 md:px-8">
-      <div className="mx-auto max-w-7xl">
-        <header className="mb-6">
-          <p className="text-sm font-semibold uppercase tracking-wide text-blue-700">
-            Academic prototype
-          </p>
-
-          <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
-            UNIMED Provider Locator
+    <main className="min-h-dvh bg-slate-50 px-3 py-3 text-slate-900 md:px-5 lg:h-dvh lg:min-h-[680px]">
+      <div className="mx-auto flex min-h-[calc(100dvh-1.5rem)] max-w-7xl flex-col lg:h-full lg:min-h-0">
+        <header className="mb-2 flex shrink-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-2xl font-bold tracking-tight">
+            UNIMED Service Provider Locator
           </h1>
-
-          <p className="mt-2 max-w-3xl text-slate-600">
-            Find active healthcare providers in Zomba by origin,
-            straight-line distance, service, and category.
-          </p>
         </header>
 
         <ProviderSearchForm
           draft={draft}
+          providers={allProviders}
           services={services}
           categories={categories}
           validationErrors={validationErrors}
+          locationError={locationError}
           geolocationStatus={geolocationStatus}
-          originNotice={originNotice}
+          mapSelectionMode={mapSelectionMode}
           hasUnappliedChanges={hasUnappliedChanges}
           controlsDisabled={initialStatus !== "success"}
           searchLoading={searchLoading}
-          onDraftChange={updateDraft}
+          onFilterChange={handleFilterChange}
+          onManualCoordinateChange={handleManualCoordinateChange}
+          onStartingPointChange={handleStartingPointChange}
           onSubmit={handleSearch}
           onUseLocation={handleUseLocation}
+          onChooseMap={handleChooseMap}
           onReset={handleReset}
+          onLayoutChange={handleToolbarLayoutChange}
         />
 
         {initialStatus === "loading" ? (
           <p
             role="status"
-            className="mb-5 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-blue-800"
+            className="mt-2 shrink-0 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-800"
           >
             Loading providers and filter options…
           </p>
         ) : initialStatus === "error" ? (
           <div
             role="alert"
-            className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-red-800"
+            className="mt-2 shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
           >
             <p>{initialError}</p>
             <button
               type="button"
               onClick={() => setReloadKey((current) => current + 1)}
-              className="mt-3 min-h-11 rounded-lg bg-red-800 px-4 py-2 font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2"
+              className="mt-2 min-h-10 rounded-lg bg-red-800 px-3 py-1.5 font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 focus-visible:ring-offset-2"
             >
               Try loading again
             </button>
@@ -544,140 +705,114 @@ export default function ProvidersPage() {
         {searchError ? (
           <p
             role="alert"
-            className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-red-800"
+            className="mt-2 shrink-0 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
           >
             {searchError} The previous successful results remain displayed.
           </p>
         ) : null}
 
-        <div className="grid items-start gap-6 lg:grid-cols-[minmax(300px,380px)_minmax(0,1fr)]">
+        <div className="mt-3 grid min-h-[400px] flex-1 items-stretch gap-3 lg:grid-cols-[20rem_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] xl:grid-cols-[21rem_minmax(0,1fr)]">
           <aside
             id="provider-results"
             aria-labelledby="results-heading"
             aria-busy={searchLoading}
-            className="order-2 lg:order-1"
+            className="flex max-h-[400px] min-w-0 flex-col overflow-hidden lg:max-h-none lg:min-h-0"
           >
-            <div className="mb-4">
-              <h2 id="results-heading" className="text-xl font-bold">
+            <div className="mb-2 shrink-0">
+              <h2
+                id="results-heading"
+                aria-live="polite"
+                className="text-lg font-bold leading-6"
+              >
                 {resultHeading}
               </h2>
 
               {resultsMode === "nearby" && appliedSearch ? (
-                <div className="mt-1 space-y-1 text-sm text-slate-600">
-                  <p>
-                    Within {appliedSearch.radius_km} km of the red origin
-                    marker. Results are ordered nearest first.
-                  </p>
-                  <p>
-                    Applied origin: {" "}
-                    {appliedSearch.origin.latitude.toFixed(6)}, {" "}
-                    {appliedSearch.origin.longitude.toFixed(6)}. Filters:{" "}
-                    {appliedSearch.service_id
-                      ? services.find(
-                          (service) =>
-                            service.id === appliedSearch.service_id
-                        )?.name ?? "Selected service"
-                      : "All services"}
-                    {"; "}
-                    {appliedSearch.category ?? "All categories"}.
-                  </p>
-                </div>
-              ) : (
-                <p className="mt-1 text-sm text-slate-600">
-                  Showing every active provider with coordinates.
+                <p className="mt-0.5 text-xs leading-4 text-slate-600">
+                  Within {appliedSearch.radius_km} km of {" "}
+                  <strong>{appliedSearch.locationLabel}</strong>
+                  {" · "}
+                  {appliedSearch.service_id
+                    ? services.find(
+                        (service) =>
+                          service.id === appliedSearch.service_id
+                      )?.name ?? "Selected service"
+                    : "All services"}
+                  {" · "}
+                  {appliedSearch.category ?? "All categories"}
                 </p>
-              )}
+              ) : null}
 
               {searchLoading ? (
-                <p role="status" className="mt-2 text-sm text-blue-700">
-                  Searching while the previous results remain visible…
+                <p role="status" className="mt-1 text-xs text-blue-700">
+                  Searching...
                 </p>
               ) : null}
             </div>
 
             {initialStatus === "loading" ? (
-              <p className="rounded-xl border border-slate-200 bg-white p-4 text-slate-600">
+              <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600">
                 Provider results are loading.
               </p>
             ) : displayedProviders.length === 0 ? (
-              <p className="rounded-xl border border-slate-200 bg-white p-4 text-slate-700">
+              <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
                 {resultsMode === "nearby"
-                  ? "No providers match this applied search. The origin and radius remain visible on the map."
+                  ? "No providers match this applied search. The starting location and radius remain visible on the map."
                   : "No active providers with coordinates are available."}
               </p>
             ) : (
-              <div className="space-y-3 lg:max-h-[640px] lg:overflow-y-auto lg:pr-1">
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1">
                 {displayedProviders.map((provider) => (
-                  <article
+                  <ProviderResultCard
                     key={provider.id}
-                    className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition hover:border-blue-300 hover:shadow-md"
-                  >
-                    <button
-                      type="button"
-                      onClick={() => handleProviderFocus(provider.id)}
-                      aria-label={`Focus ${provider.name} on the map`}
-                      className="w-full p-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-600"
-                    >
-                      <span className="block font-semibold text-slate-950">
-                        {provider.name}
-                      </span>
-
-                      <span className="mt-1 block text-sm font-medium text-blue-700">
-                        {provider.category ?? "Category not specified"}
-                      </span>
-
-                      <span className="mt-2 block text-sm text-slate-600">
-                        {provider.services.length
-                          ? provider.services.join(", ")
-                          : "Services not specified"}
-                      </span>
-
-                      {isNearbyProvider(provider) ? (
-                        <span className="mt-3 block text-sm font-semibold text-slate-800">
-                          Straight-line distance: {" "}
-                          {provider.distance_km.toFixed(2)} km
-                        </span>
-                      ) : null}
-
-                      <span className="mt-3 block text-xs font-semibold uppercase tracking-wide text-blue-700">
-                        Show on map
-                      </span>
-                    </button>
-                  </article>
+                    provider={provider}
+                    onFocus={handleProviderFocus}
+                  />
                 ))}
               </div>
             )}
           </aside>
 
           <section
+            ref={mapSectionRef}
             aria-labelledby="map-heading"
-            className="order-1 min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:sticky lg:top-6 lg:order-2"
+            className="flex min-h-[380px] min-w-0 scroll-mt-3 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm lg:min-h-0"
           >
-            <div className="border-b border-slate-200 px-4 py-3">
-              <h2 id="map-heading" className="font-semibold">
+            <div className="flex min-h-10 shrink-0 flex-wrap items-center justify-between gap-x-3 border-b border-slate-200 px-3 py-1.5">
+              <h2 id="map-heading" className="text-sm font-semibold">
                 Provider map
               </h2>
-              <p className="mt-1 text-sm text-slate-600">
-                Click the map to copy an origin into the search inputs.
-                Blue points are providers; red marks the applied origin.
-              </p>
+              {mapSelectionMode ? (
+                <p
+                  ref={mapInstructionRef}
+                  role="status"
+                  aria-live="polite"
+                  tabIndex={-1}
+                  className="text-sm font-semibold text-amber-800 focus:outline-none"
+                >
+                  Click the map to choose your starting location
+                </p>
+              ) : null}
             </div>
 
             <ProviderMap
               providers={displayedProviders}
               appliedSearch={appliedSearch}
+              draftLocation={draftLocationForMap}
+              selectionMode={mapSelectionMode}
               viewRequest={viewRequest}
               focusRequest={focusRequest}
-              onOriginSelect={handleMapOriginSelect}
+              layoutRevision={mapLayoutRevision}
+              onStartingLocationSelect={
+                handleMapStartingLocationSelect
+              }
             />
           </section>
         </div>
 
-        <footer className="mt-6 rounded-xl bg-blue-50 px-4 py-3 text-sm text-slate-600">
-          Straight-line distance is measured over the earth’s surface and
-          is not road distance or travel time. Provider information is
-          supplied for this academic demonstration, and map tiles require
-          an internet connection.
+        <footer className="mt-2 shrink-0 text-xs leading-4 text-slate-500">
+          Straight-line distance is measured over the earth&apos;s surface,
+          not by road or travel time.
         </footer>
       </div>
     </main>

@@ -28,9 +28,12 @@ export type ProviderFocusRequest = {
 type ProviderMapProps = {
   providers: DisplayProvider[];
   appliedSearch: AppliedProviderSearch | null;
+  draftLocation: SearchOrigin | null;
+  selectionMode: boolean;
   viewRequest: MapViewRequest;
   focusRequest: ProviderFocusRequest | null;
-  onOriginSelect: (origin: SearchOrigin) => void;
+  layoutRevision: number;
+  onStartingLocationSelect: (origin: SearchOrigin) => void;
 };
 
 const DEFAULT_CENTER: L.LatLngTuple = [-15.3853, 35.3321];
@@ -79,21 +82,32 @@ function createProviderPopup(provider: DisplayProvider) {
 export default function ProviderMap({
   providers,
   appliedSearch,
+  draftLocation,
+  selectionMode,
   viewRequest,
   focusRequest,
-  onOriginSelect,
+  layoutRevision,
+  onStartingLocationSelect,
 }: ProviderMapProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const providerLayerRef = useRef<L.LayerGroup | null>(null);
   const searchLayerRef = useRef<L.LayerGroup | null>(null);
+  const draftLayerRef = useRef<L.LayerGroup | null>(null);
   const markersByIdRef = useRef(new Map<string, L.CircleMarker>());
   const providerBoundsRef = useRef<L.LatLngBounds | null>(null);
-  const onOriginSelectRef = useRef(onOriginSelect);
+  const onStartingLocationSelectRef = useRef(
+    onStartingLocationSelect
+  );
+  const selectionModeRef = useRef(selectionMode);
 
   useEffect(() => {
-    onOriginSelectRef.current = onOriginSelect;
-  }, [onOriginSelect]);
+    onStartingLocationSelectRef.current = onStartingLocationSelect;
+  }, [onStartingLocationSelect]);
+
+  useEffect(() => {
+    selectionModeRef.current = selectionMode;
+  }, [selectionMode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -103,6 +117,7 @@ export default function ProviderMap({
     const map = L.map(container).setView(DEFAULT_CENTER, 13);
     const providerLayer = L.layerGroup().addTo(map);
     const searchLayer = L.layerGroup().addTo(map);
+    const draftLayer = L.layerGroup().addTo(map);
     const markersById = markersByIdRef.current;
 
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -112,7 +127,9 @@ export default function ProviderMap({
     }).addTo(map);
 
     const handleMapClick = (event: L.LeafletMouseEvent) => {
-      onOriginSelectRef.current({
+      if (!selectionModeRef.current) return;
+
+      onStartingLocationSelectRef.current({
         latitude: event.latlng.lat,
         longitude: event.latlng.lng,
       });
@@ -120,23 +137,45 @@ export default function ProviderMap({
 
     map.on("click", handleMapClick);
 
-    const resizeObserver = new ResizeObserver(() => {
-      map.invalidateSize();
-    });
+    let resizeFrame: number | null = null;
+    const invalidateSize = () => {
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
+
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null;
+        map.invalidateSize({
+          pan: false,
+          debounceMoveend: true,
+        });
+      });
+    };
+    const resizeObserver = new ResizeObserver(invalidateSize);
 
     resizeObserver.observe(container);
+    window.addEventListener("resize", invalidateSize, {
+      passive: true,
+    });
+    invalidateSize();
 
     mapRef.current = map;
     providerLayerRef.current = providerLayer;
     searchLayerRef.current = searchLayer;
+    draftLayerRef.current = draftLayer;
 
     return () => {
       resizeObserver.disconnect();
+      window.removeEventListener("resize", invalidateSize);
+      if (resizeFrame !== null) {
+        window.cancelAnimationFrame(resizeFrame);
+      }
       map.off("click", handleMapClick);
       markersById.clear();
       providerBoundsRef.current = null;
       providerLayerRef.current = null;
       searchLayerRef.current = null;
+      draftLayerRef.current = null;
       mapRef.current = null;
       map.remove();
     };
@@ -232,8 +271,8 @@ export default function ProviderMap({
       interactive: false,
     }).addTo(searchLayer);
 
-    const originPopup = document.createElement("strong");
-    originPopup.textContent = "Applied search origin";
+    const startingLocationPopup = document.createElement("strong");
+    startingLocationPopup.textContent = "Applied starting location";
 
     L.circleMarker(position, {
       radius: 9,
@@ -243,9 +282,36 @@ export default function ProviderMap({
       fillOpacity: 1,
       interactive: false,
     })
-      .bindPopup(originPopup)
+      .bindPopup(startingLocationPopup)
       .addTo(searchLayer);
   }, [appliedSearch]);
+
+  useEffect(() => {
+    const draftLayer = draftLayerRef.current;
+
+    if (!draftLayer) return;
+
+    draftLayer.clearLayers();
+
+    if (!draftLocation) return;
+
+    const draftPopup = document.createElement("strong");
+    draftPopup.textContent = "Draft starting location — not applied";
+
+    L.circleMarker(
+      [draftLocation.latitude, draftLocation.longitude],
+      {
+        radius: appliedSearch ? 6 : 9,
+        color: "#ffffff",
+        weight: 3,
+        fillColor: "#d97706",
+        fillOpacity: 1,
+        interactive: false,
+      }
+    )
+      .bindPopup(draftPopup)
+      .addTo(draftLayer);
+  }, [appliedSearch, draftLocation]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -284,6 +350,21 @@ export default function ProviderMap({
   }, [viewRequest]);
 
   useEffect(() => {
+    const map = mapRef.current;
+
+    if (!map) return;
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      map.invalidateSize({
+        pan: false,
+        debounceMoveend: true,
+      });
+    });
+
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [layoutRevision]);
+
+  useEffect(() => {
     if (!focusRequest) return;
 
     const map = mapRef.current;
@@ -304,8 +385,17 @@ export default function ProviderMap({
   return (
     <div
       ref={containerRef}
-      aria-label="Interactive map of healthcare providers in Zomba. Click the map to choose a search origin."
-      className="relative z-0 h-[520px] w-full rounded-xl md:h-[640px]"
+      role="region"
+      aria-label={
+        selectionMode
+          ? "Interactive map of healthcare providers in Zomba. Location selection is active; click the map to choose your starting location."
+          : "Interactive map of healthcare providers in Zomba."
+      }
+      className={`relative z-0 min-h-[380px] w-full flex-1 lg:min-h-0 ${
+        selectionMode
+          ? "cursor-crosshair ring-4 ring-inset ring-amber-300"
+          : ""
+      }`}
     />
   );
 }
