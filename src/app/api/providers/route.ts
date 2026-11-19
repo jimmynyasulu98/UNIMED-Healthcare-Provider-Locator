@@ -32,6 +32,8 @@ export async function GET() {
     return NextResponse.json({
       count: result.rows.length,
       providers: result.rows,
+    }, {
+      headers: { "Cache-Control": "no-store" },
     });
   } catch (error) {
     console.error("Failed to load providers:", error);

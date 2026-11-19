@@ -2,11 +2,14 @@
   "name": "unimed-healthcare-provider-locator",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types tests/nearby-search.test.mjs"
   },
   "dependencies": {
     "leaflet": "^1.9.4",
