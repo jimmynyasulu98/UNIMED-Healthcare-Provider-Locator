@@ -246,52 +246,6 @@ The optional graph stores one directed cost per permitted direction in metres. I
 
 `routing.route_costs` uses an indexed WGS84 geography nearest-edge search, records each snap fraction and evaluates direction-valid source/target endpoint combinations with `pgr_dijkstraCost`. It measures partial first/last substrings as geography lengths and adds a direct same-edge candidate, which is required for two points on one segment. `routing.route_geometry` uses the same chosen candidate and `pgr_dijkstra`, clips partial endpoint segments, preserves path order and returns the network-only line in WGS84 for Leaflet. This implementation intentionally does not depend on `pgr_withPoints*`; see the compatibility note in [database/routing/README.md](database/routing/README.md).
 
-## Available checks
-
-```powershell
-npm run test
-npm run typecheck
-npm run lint
-npm run build
-```
-
-The focused unit tests cover required, blank, malformed, duplicated, and out-of-range search parameters; stale-response invalidation; every location-selection state transition; helpful geolocation failures; manual override; applied/draft separation; and reset state. They do not connect to PostgreSQL or execute Route Handlers. Run `database/03_verify.sql` for database and spatial assertions, then use the endpoint checks in [Local setup](#local-setup) for the application-to-database path.
-
-The same JavaScript suite also covers default/switching search modes, road-limit validation, endpoint/query construction, route-request validation, and road draft canonicalisation. Directed path correctness is database-level behaviour: run `database/routing/fixtures/01_small_graph.sql` in the separate routing test database for nearest-by-road ordering, one-way, same-segment, disconnected, filter, maximum and tie cases, then run `database/routing/03_verify.sql` after the real import.
-
-## Manual verification
-
-Use the known UNIMA Clinic starting point from the dropdown. Its stored coordinates are also useful when checking the advanced manual fields:
-
-- Latitude: `-15.385343687941972`
-- Longitude: `35.332129450877574`
-
-With no service or category filter, verify the current data returns:
-
-- 1 km: 2 providers (`UNIMA Clinic` and `MASM`)
-- 5 km: 9 providers
-- 17 km: 10 providers
-- 20 km: 11 providers
-- UNIMA Clinic: approximately 0.00 km
-
-Also verify:
-
-1. Loading the page does not request location permission. **Use my location** labels a successful choice as **Your current location**; denial or an unavailable position suggests the map and starting-point dropdown.
-2. **Choose on map** scrolls the map into view, shows **Click the map to choose your starting location**, and creates an amber draft marker only after a map click.
-3. Choosing **UNIMA Clinic** uses its stored coordinates and displays its name. The dropdown continues to contain the complete provider list even after a filtered or zero-result search.
-4. Editing either field in **Advanced** changes the summary to **Manually entered location** and clears any current-location or provider identity.
-5. Selecting **Search nearby** without a location shows only: **Choose your location, select a starting point, or click the map.** Partial, malformed, or out-of-range manual coordinates show detailed coordinate validation.
-6. After a completed search, choosing another location changes only the draft summary and amber marker. The existing list, red marker, circle, and applied summary remain aligned until **Search nearby** is selected again.
-7. Service and category filters reduce the results appropriately and preserve nearest-first ordering and **Straight-line distance** labels.
-8. A valid search around `0, 0` produces zero results while keeping its applied starting location and radius visible.
-9. **Reset** cancels an in-flight search, clears location and filters, removes search markers and the circle, and restores the complete map and list.
-10. Rapid consecutive searches cannot let an older response replace a newer one, and clicking a provider card still focuses its blue map marker and opens its popup.
-11. Missing or blank coordinates/radius, invalid IDs, and out-of-range values sent directly to the nearby API return HTTP `400`.
-12. At desktop widths, the normal toolbar, results heading, and a usable map area are visible together. At mobile widths, controls stack without horizontal overflow and the results and map remain available through normal page scrolling.
-13. Opening a provider marker popup and following **Get directions** opens Google Maps in a new tab with that provider's stored coordinates as the destination. The locator does not send a starting location in the link.
-14. Switching to **Shortest by road** does not apply until **Search nearby** is selected. Radius and its circle disappear only after a successful road search; switching the draft back does not relabel old road results.
-15. With routing intentionally unconfigured, road search reports that setup is unavailable and leaves the previous successful results intact while straight-line searches continue to work.
-16. With the routing test database configured, search from **UNIMA Clinic**, confirm distances say **Road distance**, select a reachable result and confirm a solid purple route plus clearly dashed snap-access links reach that provider. Confirm an unreachable result says **No road route available** without being treated as a database error.
 
 ## Limitations
 
