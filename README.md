@@ -295,12 +295,7 @@ Also verify:
 
 ## Limitations
 
-- Provider records and service assignments are a snapshot of the supplied academic catalogue, not a verified or current healthcare directory.
-- Each of the 11 provider rows preserves its stored Google Maps short link in `data_source` for provenance only. A link does not guarantee a provider's current identity, location, or services.
-- All `verified_on`, address, and phone values are unknown (`NULL`), and two categories intentionally remain unspecified because the source data contains `NULL`.
 - Straight-line distances do not account for roads, terrain, traffic, or travel time. Road mode measures eligible network length only; it is not a travel-time estimate.
 - Map tiles are © OpenStreetMap contributors, require internet access, and are subject to OpenStreetMap tile availability and usage policy.
-- No external geocoder is used; named starting points come only from the supplied provider records.
 - The optional OSM graph does not evaluate traffic, speeds, live closures, turn-restriction relations, barriers, time-dependent access, or conditional one-way rules. Snap connectors are straight-line approximations and are excluded from displayed road distance.
-- Imported road coverage and tags can be incomplete. The setup deliberately fails verification if any provider—including St Luke or Pirimiti—cannot snap within 500 metres; coordinates are never fabricated to make routing pass.
 - This version has no administration, authentication, paid routing service, travel-time calculation, or deployment configuration.
